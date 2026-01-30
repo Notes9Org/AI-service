@@ -4,7 +4,7 @@ Re-index semantic_chunks embeddings with the current embedder (Azure or Bedrock 
 Use this after switching embedding models (e.g. Azure text-embedding-3-small → Bedrock Cohere).
 Query and index embeddings must come from the same model; otherwise RAG finds 0 chunks.
 
-Run from project root (python-service):
+Run from project root (backend):
   python -m scripts.reindex_embeddings
   python -m scripts.reindex_embeddings --dry-run
   python -m scripts.reindex_embeddings --limit 100
@@ -16,7 +16,7 @@ import argparse
 import os
 import sys
 
-# Ensure project root (python-service) is on path when run as script from scripts/
+# Ensure project root (backend) is on path when run as script from scripts/
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_script_dir)
 if _project_root not in sys.path:
