@@ -245,7 +245,7 @@ app.include_router(literature_router)
 
 @app.get("/health", tags=["monitoring"])
 async def health_check() -> Dict[str, Any]:
-    """Health check endpoint."""
+    """Health check endpoint for ECS/Docker health probes."""
     return {"status": "healthy", "service": "notes9-agent-chat", "version": "1.0.0"}
 
 

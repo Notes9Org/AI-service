@@ -15,8 +15,6 @@ from agents.graph.nodes.final import final_node
 logger = structlog.get_logger()
 
 
-
-
 def should_retry(state: AgentState) -> str:
     """Conditional edge: should retry or go to final?"""
     # Early exit if final_response already set (error case)

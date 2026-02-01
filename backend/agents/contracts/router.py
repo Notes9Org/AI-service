@@ -1,10 +1,10 @@
-""" Router decision contract for agent schemas."""
+"""Router decision contract for agent schemas."""
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal, List, Dict, Any
 
 class RouterDecision(BaseModel):
-    """ Router decision schema for agent execution and tool selection."""
+    """Router decision schema for agent execution and tool selection."""
     tools: List[Literal["sql", "rag"]] = Field(
         ...,
         description="Selected tools: ['sql'], ['rag'], or ['sql', 'rag']"

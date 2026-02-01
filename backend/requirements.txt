@@ -19,10 +19,9 @@ beautifulsoup4==4.12.2
 lxml==4.9.3
 html2text==2024.2.26
 
-# LangGraph (for future agentic framework)
+# LangGraph (agentic framework)
 langgraph==0.0.20
 langchain==0.1.0
-langchain-openai==0.0.2
 
 # Database
 psycopg2-binary==2.9.9
