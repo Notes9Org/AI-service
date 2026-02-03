@@ -72,8 +72,18 @@ def build_agent_graph() -> StateGraph:
     # Add edges
     graph.set_entry_point("normalize")
     
-    # normalize → router (always)
-    graph.add_edge("normalize", "router")
+    # normalize → final (if out-of-scope response set) or router
+    def route_after_normalize(state: AgentState) -> str:
+        """If normalize set final_response (e.g. out-of-scope), go to final; else router."""
+        if state.get("final_response"):
+            return "final"
+        return "router"
+    
+    graph.add_conditional_edges(
+        "normalize",
+        route_after_normalize,
+        {"final": "final", "router": "router"}
+    )
     
     # router → tools (conditional routing)
     # For parallel execution when both SQL and RAG are needed:

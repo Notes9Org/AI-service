@@ -19,58 +19,45 @@ def validate_normalized_output(
         Tuple of (is_valid, list_of_issues)
     """
     issues: List[str] = []
+
+    # Domain/scope invariants (single source of truth)
+    if not normalized.in_scope:
+        if not normalized.out_of_scope_reason or not str(normalized.out_of_scope_reason).strip():
+            issues.append("in_scope is false but out_of_scope_reason is empty")
+    else:
+        if normalized.intent not in ("aggregate", "search", "hybrid"):
+            issues.append("in_scope is true but intent must be one of aggregate, search, hybrid")
+
+    # Intent/context invariants only when in-scope
+    if normalized.in_scope:
+        if normalized.intent == "aggregate":
+            if not normalized.context.get("requires_aggregation"):
+                issues.append(
+                    "Intent is 'aggregate' but context.requires_aggregation is not True"
+                )
+        if normalized.intent == "search":
+            if not normalized.context.get("requires_semantic_search"):
+                issues.append(
+                    "Intent is 'search' but context.requires_semantic_search is not True"
+                )
+        if normalized.intent == "hybrid":
+            if not normalized.context.get("requires_aggregation"):
+                issues.append(
+                    "Intent is 'hybrid' but context.requires_aggregation is not True"
+                )
+            if not normalized.context.get("requires_semantic_search"):
+                issues.append(
+                    "Intent is 'hybrid' but context.requires_semantic_search is not True"
+                )
     
-    # Invariant 1: Intent matches context flags
-    if normalized.intent == "aggregate":
-        if not normalized.context.get("requires_aggregation"):
-            issues.append(
-                "Intent is 'aggregate' but context.requires_aggregation is not True"
-            )
-    
-    if normalized.intent == "search":
-        if not normalized.context.get("requires_semantic_search"):
-            issues.append(
-                "Intent is 'search' but context.requires_semantic_search is not True"
-            )
-    
-    if normalized.intent == "hybrid":
-        if not normalized.context.get("requires_aggregation"):
-            issues.append(
-                "Intent is 'hybrid' but context.requires_aggregation is not True"
-            )
-        if not normalized.context.get("requires_semantic_search"):
-            issues.append(
-                "Intent is 'hybrid' but context.requires_semantic_search is not True"
-            )
-    
-    # Invariant 2: Normalized query not empty
+    # Normalized query not empty
     if not normalized.normalized_query or not normalized.normalized_query.strip():
         issues.append("normalized_query is empty")
     
-    # Invariant 3: Entities structure is valid
     if not isinstance(normalized.entities, dict):
         issues.append("entities is not a dict")
     
-    # Invariant 4: Context structure is valid
     if not isinstance(normalized.context, dict):
         issues.append("context is not a dict")
-    
-    # Invariant 5: If dates mentioned in query, entities.dates should ideally have values
-    # (This is a soft check - we log warning but don't fail)
-    query_lower = request.get("query", "").lower()
-    date_keywords = ["date", "month", "year", "week", "day", "yesterday", "today", "last", "ago"]
-    has_date_keywords = any(keyword in query_lower for keyword in date_keywords)
-    
-    if has_date_keywords:
-        dates = normalized.entities.get("dates", [])
-        if not dates or len(dates) == 0:
-            # This is a warning, not an error - dates might be implicit
-            pass  # Could add to issues if we want strict validation
-    
-    # Invariant 6: If experiment IDs mentioned, they should be extracted
-    # (Soft check - log but don't fail)
-    if "experiment" in query_lower or "exp-" in query_lower.lower():
-        experiment_ids = normalized.entities.get("experiment_ids", [])
-        # Could add validation here if needed
     
     return len(issues) == 0, issues

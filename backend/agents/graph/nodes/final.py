@@ -54,6 +54,10 @@ def final_node(state: AgentState) -> AgentState:
         except Exception:
             pass
     
+    # Preserve final_response already set (e.g. out-of-scope from normalize)
+    if state.get("final_response") is not None:
+        return state
+    
     try:
         tool_used = "rag"
         if router:

@@ -77,44 +77,39 @@ def normalize_node(state: AgentState) -> AgentState:
         
         prompt = f"""Normalize the following user query for a scientific lab management system.
 
+DOMAIN (in-scope only): This system supports queries about:
+- Experiments, projects, samples, protocols, equipment, reports, lab notes, literature within the system.
+- Counting/listing/filtering experiments, projects, samples; searching notes and literature; status and metadata.
+If the user's query is NOT about this domain (e.g. weather, recipes, general knowledge, other subjects), set in_scope=false, domain="general" or "unknown", intent="other", and set out_of_scope_reason to a short explanation.
+
 User Query: {query_text}
 
 Conversation History:
 {history_text if history_text else 'None'}
 
 Extract and return JSON with:
-1. intent: One of "aggregate", "search", or "hybrid"
-   - "aggregate": Use for queries that need SQL/database queries:
-     * Counting, statistics, aggregations (e.g., "How many experiments?")
-     * Retrieving specific data points by ID (e.g., "What is the status of experiment X?")
-     * Filtering by structured fields (status, dates, types)
-     * Queries with specific IDs (experiment_id, sample_id, project_id)
-   - "search": Use for semantic/conceptual queries:
-     * "What is attention mechanism?" (conceptual explanation)
-     * "Find notes about PCR" (semantic search)
-     * Questions requiring understanding of content meaning
-   - "hybrid": Use when both SQL and semantic search are needed
-2. normalized_query: Cleaned query text preserving scientific terms
-3. entities: Dict with extracted entities:
-   - dates: List of date strings if mentioned
-   - numbers: List of numbers if mentioned
-   - experiment_ids: List of experiment IDs (UUIDs) if mentioned
-   - experiment_names: List of experiment names (e.g., "Protein purification", "Vaccine production") if mentioned
-   - project_ids: List of project IDs (UUIDs) if mentioned
-   - project_names: List of project names (e.g., "Vaccine production", "Research Project A") if mentioned
-   - sample_types: List of sample types if mentioned
-   - statuses: List of statuses if mentioned
-   - person_names: List of person names (first name, last name, or full name like "John Doe") if mentioned
-   - person_ids: List of person/profile IDs (UUIDs) if mentioned
-4. context: Dict with:
-   - requires_aggregation: boolean (true if needs SQL)
-   - requires_semantic_search: boolean (true if needs RAG)
-   - time_range: optional dict with start/end dates
-5. history_summary: Optional string summarizing relevant conversation history (only if needed)
+1. domain: One of "lab", "general", "unknown"
+   - "lab": Query is clearly about lab management (experiments, projects, samples, protocols, equipment, reports, lab notes, literature).
+   - "general": Query is about something else (general knowledge, weather, etc.).
+   - "unknown": Unclear; treat as out-of-scope if doubtful.
+2. in_scope: boolean. True only if the query is about the lab domain above; false otherwise.
+3. out_of_scope_reason: string or null. When in_scope is false, set a short reason (e.g. "general knowledge", "weather", "unrelated topic"). When in_scope is true, set null.
+4. intent: One of "aggregate", "search", "hybrid", "other"
+   - "aggregate": In-scope queries needing SQL (counts, status, filters, IDs).
+   - "search": In-scope semantic/conceptual search (notes, literature, content).
+   - "hybrid": In-scope queries needing both SQL and semantic search.
+   - "other": Use when in_scope is false (query not about lab domain).
+5. normalized_query: Cleaned query text preserving scientific terms (or original intent if out-of-scope).
+6. entities: Dict with extracted entities (dates, experiment_ids, project_names, etc.) when in-scope; empty when out-of-scope.
+7. context: Dict with requires_aggregation, requires_semantic_search, time_range when in-scope; empty when out-of-scope.
+8. history_summary: Optional string summarizing relevant conversation history (only if needed).
 
 Return ONLY valid JSON matching this structure:
 {{
-  "intent": "aggregate|search|hybrid",
+  "domain": "lab|general|unknown",
+  "in_scope": true or false,
+  "out_of_scope_reason": null or "short reason string",
+  "intent": "aggregate|search|hybrid|other",
   "normalized_query": "cleaned query text",
   "entities": {{}},
   "context": {{}},
@@ -125,13 +120,16 @@ Return ONLY valid JSON matching this structure:
         schema = {
             "type": "object",
             "properties": {
-                "intent": {"type": "string", "enum": ["aggregate", "search", "hybrid"]},
+                "domain": {"type": "string", "enum": ["lab", "general", "unknown"]},
+                "in_scope": {"type": "boolean"},
+                "out_of_scope_reason": {"type": ["string", "null"]},
+                "intent": {"type": "string", "enum": ["aggregate", "search", "hybrid", "other"]},
                 "normalized_query": {"type": "string"},
                 "entities": {"type": "object"},
                 "context": {"type": "object"},
                 "history_summary": {"type": ["string", "null"]}
             },
-            "required": ["intent", "normalized_query", "entities", "context"]
+            "required": ["domain", "in_scope", "out_of_scope_reason", "intent", "normalized_query", "entities", "context"]
         }
         
         from services.config import get_app_config
@@ -161,6 +159,7 @@ Return ONLY valid JSON matching this structure:
                 node_name="normalize",
                 reasoning=f"Normalized query from '{query_text}' to '{normalized.normalized_query}'",
                 factors=[
+                    f"Domain: {normalized.domain}, in_scope: {normalized.in_scope}",
                     f"Intent: {normalized.intent}",
                     f"Entities: {len(normalized.entities)}"
                 ],
@@ -173,25 +172,71 @@ Return ONLY valid JSON matching this structure:
             if run_id:
                 thinking_logger.log_validation(
                     run_id=run_id, node_name="normalize", validation_type="invariant",
-                    criteria=["intent matches context", "query not empty"],
+                    criteria=["intent matches context", "query not empty", "in_scope/out_of_scope_reason"],
                     result="fail", issues=validation_issues
                 )
+        
+        state["normalized_query"] = normalized
+        
+        # Out-of-scope: generate polite message via LLM and set final_response so graph goes to final
+        if not normalized.in_scope:
+            out_prompt = f"""The user asked something that is not related to this system's domain.
+
+User query: {query_text}
+Reason out of scope: {normalized.out_of_scope_reason or 'Not about lab management'}
+
+This system only helps with: experiments, projects, samples, protocols, equipment, reports, lab notes, and literature within the lab management system.
+
+Generate a single short, polite response (1-2 sentences) that:
+1. States that this question is not within the system's domain or not something we can help with (similar meaning).
+2. Briefly mentions what we can help with (lab management: experiments, projects, samples, etc.).
+Do not apologize excessively. Be clear and helpful. Return ONLY the response text, no JSON, no quotes."""
+
+            try:
+                out_msg = llm_client.complete_text(
+                    prompt=out_prompt,
+                    temperature=0.3,
+                )
+                out_msg = (out_msg or "").strip() or "This question isn't related to lab management. I can help with experiments, projects, samples, protocols, and lab notes."
+            except Exception as e:
+                logger.warning("Out-of-scope message generation failed, using fallback", error=str(e), run_id=run_id)
+                out_msg = "This question isn't related to lab management. I can help with experiments, projects, samples, protocols, and lab notes."
+            from agents.contracts.response import FinalResponse
+            state["final_response"] = FinalResponse(
+                answer=out_msg,
+                citations=[],
+                confidence=0.0,
+                tool_used="none",
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+            node_end("normalize", int(latency_ms))
+            logger.info("normalize_node completed (out-of-scope)", agent_node="normalize", run_id=run_id,
+                       in_scope=False, domain=normalized.domain, out_of_scope_reason=normalized.out_of_scope_reason,
+                       latency_ms=round(latency_ms, 2))
+            if run_id:
+                try:
+                    trace_service.log_event(
+                        run_id=run_id, node_name="normalize", event_type="output",
+                        payload={"in_scope": False, "domain": normalized.domain, "out_of_scope_reason": normalized.out_of_scope_reason},
+                        latency_ms=latency_ms
+                    )
+                except Exception:
+                    pass
+            return state
         
         latency_ms = int((time.time() - start_time) * 1000)
         node_end("normalize", int(latency_ms))
         logger.info("normalize_node completed", agent_node="normalize", run_id=run_id,
-                   intent=normalized.intent, normalized_query=normalized.normalized_query[:100],
+                   intent=normalized.intent, in_scope=normalized.in_scope, normalized_query=normalized.normalized_query[:100],
                    entities_count=len(normalized.entities), latency_ms=round(latency_ms, 2),
                    payload={"input_query": query_text[:200], "output_intent": normalized.intent,
                            "output_normalized_query": normalized.normalized_query[:200], "output_entities_count": len(normalized.entities)})
-        
-        state["normalized_query"] = normalized
         
         if run_id:
             try:
                 trace_service.log_event(
                     run_id=run_id, node_name="normalize", event_type="output",
-                    payload={"intent": normalized.intent, "entities_count": len(normalized.entities)},
+                    payload={"intent": normalized.intent, "in_scope": True, "entities_count": len(normalized.entities)},
                     latency_ms=latency_ms
                 )
             except Exception:
@@ -202,7 +247,7 @@ Return ONLY valid JSON matching this structure:
             state["trace"].append({
                 "node": "normalize",
                 "input": {"query": query_text[:200]},
-                "output": {"intent": normalized.intent, "normalized_query": normalized.normalized_query[:200]},
+                "output": {"intent": normalized.intent, "normalized_query": normalized.normalized_query[:200], "in_scope": normalized.in_scope},
                 "latency_ms": round(latency_ms, 2)
             })
         
