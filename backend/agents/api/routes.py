@@ -123,10 +123,20 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
             "router_decision": None,
             "sql_result": None,
             "rag_result": None,
+            "sql_runs": [],
+            "rag_chunks_all": [],
             "summary": None,
             "judge_result": None,
             "retry_count": 0,
+            "attempted_tools": [],
+            "flags": None,
+            "retry_context": None,
+            "best_summary": None,
+            "best_judge_result": None,
+            "best_tool_used": None,
             "final_response": None,
+            "run_process_log": [],
+            "run_citations": [],
             "trace": []
         }
         
@@ -135,11 +145,12 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
         final_response = final_state.get("final_response")
         
         if not final_response:
+            from agents.constants import TOOL_RAG, CONFIDENCE_ERROR_OR_MISSING
             final_response = FinalResponse(
                 answer="Agent execution completed but no response generated.",
                 citations=[],
-                confidence=0.0,
-                tool_used="rag"
+                confidence=CONFIDENCE_ERROR_OR_MISSING,
+                tool_used=TOOL_RAG
             )
         
         total_latency_ms = int((time.time() - start_time) * 1000)

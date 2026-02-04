@@ -9,7 +9,7 @@ from psycopg2.extras import RealDictCursor
 from services.db import SupabaseService
 from services.config import get_database_config, ConfigurationError
 from agents.services.llm_client import LLMClient, LLMError
-from agents.services.db_schema import DB_SCHEMA
+from agents.services.db_schema import USER_FACING_SCHEMA
 
 logger = structlog.get_logger()
 
@@ -234,7 +234,7 @@ Extracted Entities:
 {person_names_note}
 
 Database Schema:
-{DB_SCHEMA}
+{USER_FACING_SCHEMA}
 
 CRITICAL REQUIREMENTS:
 1. Query MUST be a SELECT statement only (read-only)
@@ -252,11 +252,12 @@ CRITICAL REQUIREMENTS:
 4. If querying experiments, samples, or lab_notes, join through projects as needed
 5. Use proper JOINs to access related tables
 6. Return only the columns needed to answer the query
-7. Use appropriate WHERE clauses based on entities mentioned in the query
-8. Use proper PostgreSQL syntax - UUIDs should be cast with ::uuid
-9. Do NOT include any DROP, DELETE, UPDATE, INSERT, ALTER, or other write operations
-10. Do NOT include comments in the SQL
-11. Do NOT filter by organization_id, project_id, or experiment_id unless explicitly mentioned in the query
+7. When returning projects and/or experiments (e.g. summaries, lists, overviews), ALWAYS include p.id AS project_id and/or e.id AS experiment_id in the SELECT so downstream steps can fetch related lab notes and literature. Use table aliases: p for projects, e for experiments.
+8. Use appropriate WHERE clauses based on entities mentioned in the query
+9. Use proper PostgreSQL syntax - UUIDs should be cast with ::uuid
+10. Do NOT include any DROP, DELETE, UPDATE, INSERT, ALTER, or other write operations
+11. Do NOT include comments in the SQL
+12. Do NOT filter by organization_id, project_id, or experiment_id unless explicitly mentioned in the query
 
 Example JOIN patterns:
 - To get a specific experiment by ID (MUST filter by user):

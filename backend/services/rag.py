@@ -73,7 +73,8 @@ class RAGService:
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
         match_threshold: float = 0.75,
-        match_count: int = 6
+        match_count: int = 6,
+        return_below_threshold_for_entity: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Search semantic chunks using vector similarity.
@@ -88,6 +89,9 @@ class RAGService:
             source_types: Filter by source types (e.g., ['lab_note', 'report'])
             match_threshold: Minimum similarity score (0.0 to 1.0)
             match_count: Maximum number of results to return
+            return_below_threshold_for_entity: If True and project_id/experiment_id is set,
+                when no chunks pass the threshold, return top match_count chunks by similarity
+                for that entity (so entity-scoped fetch still returns textual content when it exists).
             
         Returns:
             List of matching chunks with similarity scores
@@ -175,9 +179,39 @@ class RAGService:
             results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
             results = results[:match_count]
             
-            # Debug: Log top similarities even if below threshold
-            if len(chunks) > 0 and len(results) == 0:
-                # Calculate similarities for all chunks to see what we're missing
+            # When filtering by entity (project/experiment), if no chunk passes threshold,
+            # return top chunks by similarity for that entity so we still get textual content.
+            if (
+                return_below_threshold_for_entity
+                and (project_id or experiment_id)
+                and len(chunks) > 0
+                and len(results) == 0
+            ):
+                for chunk in chunks:
+                    embedding = chunk.get("embedding")
+                    parsed_embedding = parse_embedding(embedding)
+                    if parsed_embedding is None or len(parsed_embedding) != len(query_embedding):
+                        continue
+                    chunk_vec = np.array(parsed_embedding, dtype=np.float32)
+                    dot_product = np.dot(query_vec, chunk_vec)
+                    norm_query = np.linalg.norm(query_vec)
+                    norm_chunk = np.linalg.norm(chunk_vec)
+                    if norm_query > 0 and norm_chunk > 0:
+                        similarity = float(dot_product / (norm_query * norm_chunk))
+                    else:
+                        similarity = 0.0
+                    chunk["similarity"] = similarity
+                    results.append(chunk)
+                results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+                results = results[:match_count]
+                logger.info(
+                    "Returning below-threshold chunks for entity",
+                    project_id=project_id,
+                    experiment_id=experiment_id,
+                    chunks_returned=len(results),
+                )
+            elif len(chunks) > 0 and len(results) == 0:
+                # Debug: Log top similarities even if below threshold
                 all_similarities = []
                 for chunk in chunks[:10]:  # Check first 10
                     embedding = chunk.get("embedding")

@@ -1,13 +1,12 @@
 """Normalize user query node."""
 import time
 import structlog
+from typing import List, Tuple
 from tenacity import RetryError
 from agents.graph.state import AgentState
 from agents.contracts.normalized import NormalizedQuery
 from agents.services.llm_client import LLMClient, LLMError
 from services.trace_service import TraceService
-from agents.graph.nodes.normalize_validator import validate_normalized_output
-from agents.graph.nodes._debug import node_start, node_end
 from agents.services.thinking_logger import get_thinking_logger
 
 logger = structlog.get_logger()
@@ -33,9 +32,36 @@ def get_trace_service() -> TraceService:
     return _trace_service
 
 
+def _validate_normalized(normalized: NormalizedQuery, request: dict) -> Tuple[bool, List[str]]:
+    """Validate normalized output against invariants. Returns (is_valid, issues)."""
+    issues: List[str] = []
+    if not normalized.in_scope:
+        if not normalized.out_of_scope_reason or not str(normalized.out_of_scope_reason).strip():
+            issues.append("in_scope is false but out_of_scope_reason is empty")
+    else:
+        if normalized.intent not in ("aggregate", "search", "hybrid"):
+            issues.append("in_scope is true but intent must be one of aggregate, search, hybrid")
+    if normalized.in_scope:
+        if normalized.intent == "aggregate" and not normalized.context.get("requires_aggregation"):
+            issues.append("Intent is 'aggregate' but context.requires_aggregation is not True")
+        if normalized.intent == "search" and not normalized.context.get("requires_semantic_search"):
+            issues.append("Intent is 'search' but context.requires_semantic_search is not True")
+        if normalized.intent == "hybrid":
+            if not normalized.context.get("requires_aggregation"):
+                issues.append("Intent is 'hybrid' but context.requires_aggregation is not True")
+            if not normalized.context.get("requires_semantic_search"):
+                issues.append("Intent is 'hybrid' but context.requires_semantic_search is not True")
+    if not normalized.normalized_query or not normalized.normalized_query.strip():
+        issues.append("normalized_query is empty")
+    if not isinstance(normalized.entities, dict):
+        issues.append("entities is not a dict")
+    if not isinstance(normalized.context, dict):
+        issues.append("context is not a dict")
+    return len(issues) == 0, issues
+
+
 def normalize_node(state: AgentState) -> AgentState:
     """Normalize user query into structured format with intent, entities, and context."""
-    node_start("normalize")
     start_time = time.time()
     request = state["request"]
     run_id = state.get("run_id")
@@ -77,10 +103,11 @@ def normalize_node(state: AgentState) -> AgentState:
         
         prompt = f"""Normalize the following user query for a scientific lab management system.
 
-DOMAIN (in-scope only): This system supports queries about:
-- Experiments, projects, samples, protocols, equipment, reports, lab notes, literature within the system.
-- Counting/listing/filtering experiments, projects, samples; searching notes and literature; status and metadata.
-If the user's query is NOT about this domain (e.g. weather, recipes, general knowledge, other subjects), set in_scope=false, domain="general" or "unknown", intent="other", and set out_of_scope_reason to a short explanation.
+DOMAIN and IN-SCOPE rules (important):
+- Users store lab notes, literature, protocols, and reports IN the system. They often ask to "explain X", "what is X", "tell me about X", "find notes about X" for topics they have documented (e.g. IOCL workflow, attention mechanism, PCR, a procedure). Such queries are IN-SCOPE with intent "search" (RAG): we search their content and answer from it.
+- Set in_scope=TRUE and intent="search" for: "Explain about X", "What is X", "Tell me about X", "Find notes about X", "Summarize X" — so we search lab notes and literature. Only set in_scope=FALSE for queries that clearly cannot be in lab content (e.g. weather, recipes, sports, "write a poem", "current news").
+- In-scope: (1) Structured/data queries → aggregate or hybrid (experiments, projects, counts, status, IDs). (2) Explanation or search-for-information queries → search (RAG will find user's notes/literature about the topic).
+- Out-of-scope only when: query is plainly unrelated to any possible lab/research content (weather, cooking, entertainment, etc.).
 
 User Query: {query_text}
 
@@ -88,20 +115,13 @@ Conversation History:
 {history_text if history_text else 'None'}
 
 Extract and return JSON with:
-1. domain: One of "lab", "general", "unknown"
-   - "lab": Query is clearly about lab management (experiments, projects, samples, protocols, equipment, reports, lab notes, literature).
-   - "general": Query is about something else (general knowledge, weather, etc.).
-   - "unknown": Unclear; treat as out-of-scope if doubtful.
-2. in_scope: boolean. True only if the query is about the lab domain above; false otherwise.
-3. out_of_scope_reason: string or null. When in_scope is false, set a short reason (e.g. "general knowledge", "weather", "unrelated topic"). When in_scope is true, set null.
-4. intent: One of "aggregate", "search", "hybrid", "other"
-   - "aggregate": In-scope queries needing SQL (counts, status, filters, IDs).
-   - "search": In-scope semantic/conceptual search (notes, literature, content).
-   - "hybrid": In-scope queries needing both SQL and semantic search.
-   - "other": Use when in_scope is false (query not about lab domain).
-5. normalized_query: Cleaned query text preserving scientific terms (or original intent if out-of-scope).
-6. entities: Dict with extracted entities (dates, experiment_ids, project_names, etc.) when in-scope; empty when out-of-scope.
-7. context: Dict with requires_aggregation, requires_semantic_search, time_range when in-scope; empty when out-of-scope.
+1. domain: "lab" if the query could be answered from lab content (notes, literature, experiments, etc.); "general" only if clearly not (weather, recipes); "unknown" if doubtful — when doubtful, prefer "lab" so we try search.
+2. in_scope: true if we should try to answer (search user content and/or DB). false only for clearly off-topic queries.
+3. out_of_scope_reason: string or null. When in_scope is false, set a short reason. When in_scope is true, set null.
+4. intent: "aggregate" (SQL), "search" (RAG — use for explain/find notes/what is X), "hybrid", or "other" (only when in_scope is false).
+5. normalized_query: Cleaned query text preserving scientific terms.
+6. entities: Dict with extracted entities when relevant; empty when pure search.
+7. context: Dict with requires_aggregation, requires_semantic_search (true for search intent), time_range when relevant.
 8. history_summary: Optional string summarizing relevant conversation history (only if needed).
 
 Return ONLY valid JSON matching this structure:
@@ -166,7 +186,7 @@ Return ONLY valid JSON matching this structure:
                 conclusion=f"Query classified as {normalized.intent} intent"
             )
         
-        is_valid, validation_issues = validate_normalized_output(normalized, request)
+        is_valid, validation_issues = _validate_normalized(normalized, request)
         if not is_valid:
             logger.warning("Normalize validation issues", run_id=run_id, issues=validation_issues)
             if run_id:
@@ -209,7 +229,6 @@ Do not apologize excessively. Be clear and helpful. Return ONLY the response tex
                 tool_used="none",
             )
             latency_ms = int((time.time() - start_time) * 1000)
-            node_end("normalize", int(latency_ms))
             logger.info("normalize_node completed (out-of-scope)", agent_node="normalize", run_id=run_id,
                        in_scope=False, domain=normalized.domain, out_of_scope_reason=normalized.out_of_scope_reason,
                        latency_ms=round(latency_ms, 2))
@@ -225,7 +244,6 @@ Do not apologize excessively. Be clear and helpful. Return ONLY the response tex
             return state
         
         latency_ms = int((time.time() - start_time) * 1000)
-        node_end("normalize", int(latency_ms))
         logger.info("normalize_node completed", agent_node="normalize", run_id=run_id,
                    intent=normalized.intent, in_scope=normalized.in_scope, normalized_query=normalized.normalized_query[:100],
                    entities_count=len(normalized.entities), latency_ms=round(latency_ms, 2),
@@ -266,9 +284,7 @@ Do not apologize excessively. Be clear and helpful. Return ONLY the response tex
                 except Exception:
                     pass
         err_msg = (str(cause) or str(e))[:200]
-        node_end("normalize", int(latency_ms), f"error: {err_msg}")
         logger.error("normalize_node failed", run_id=run_id, error=err_msg, raw_error=str(e))
-        print(f"[NODE] NORMALIZE failed: {err_msg}", flush=True)
         if run_id:
             try:
                 trace_service.log_event(run_id=run_id, node_name="normalize", event_type="error",

@@ -1,16 +1,66 @@
-"""RAG retrieval node."""
+"""RAG retrieval node. Uses SQL result IDs when available to fetch descriptions by UUID filter."""
 import time
 import structlog
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set, Tuple
 from agents.graph.state import AgentState
 from services.rag import RAGService
 from services.embedder import EmbeddingService
 from services.trace_service import TraceService
-from agents.graph.nodes._debug import node_start, node_end
 from services.config import get_app_config
+from agents.constants import (
+    TOOL_RAG,
+    RAG_WEAK_MIN_AVG_CONTENT_LEN,
+    RAG_CHUNK_CONTENT_TRUNCATE,
+    RAG_TOP_CHUNKS,
+    RAG_TOP_CHUNKS_PER_ENTITY,
+    RAG_MAX_ENTITIES_FOR_ID_FETCH,
+)
 from agents.services.thinking_logger import get_thinking_logger
 
 logger = structlog.get_logger()
+
+
+def _entity_ids_from_sql_state(state: AgentState) -> Tuple[List[str], List[str]]:
+    """Extract distinct project_ids and experiment_ids from sql_result or sql_runs for UUID-filtered RAG."""
+    project_ids: List[str] = []
+    experiment_ids: List[str] = []
+    seen_p: Set[str] = set()
+    seen_e: Set[str] = set()
+
+    def _collect_from_rows(rows: List[Dict]) -> None:
+        if not rows:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for k, v in row.items():
+                if v is None or not str(v).strip():
+                    continue
+                k_lower = k.lower()
+                if k_lower == "project_id":
+                    s = str(v).strip()
+                    if s and s not in seen_p:
+                        seen_p.add(s)
+                        project_ids.append(s)
+                if k_lower == "experiment_id":
+                    s = str(v).strip()
+                    if s and s not in seen_e:
+                        seen_e.add(s)
+                        experiment_ids.append(s)
+
+    sql_runs = state.get("sql_runs") or []
+    if sql_runs:
+        for run in sql_runs[:5]:
+            if isinstance(run, dict) and not run.get("error"):
+                _collect_from_rows(run.get("data") or [])
+    sql_result = state.get("sql_result")
+    if not sql_runs and sql_result and isinstance(sql_result, dict) and not sql_result.get("error"):
+        _collect_from_rows(sql_result.get("data") or [])
+
+    return (
+        project_ids[:RAG_MAX_ENTITIES_FOR_ID_FETCH],
+        experiment_ids[:RAG_MAX_ENTITIES_FOR_ID_FETCH],
+    )
 
 # Get similarity threshold from config
 _app_config = None
@@ -61,26 +111,26 @@ def rag_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     trace_service = get_trace_service()
     
-    if not router or "rag" not in router.tools:
+    if not router or TOOL_RAG not in router.tools:
         return state
-    
+
     if not normalized:
         logger.error("rag_node: normalized_query missing", run_id=run_id)
         state["rag_result"] = []
-        # Log error event
+        _lat = int((time.time() - start_time) * 1000)
+        logger.info("rag_node completed", agent_node="rag", run_id=run_id,
+                   chunks_found=0, avg_similarity=0.0, latency_ms=round(_lat, 2),
+                   payload={"input_normalized_query": None, "output_chunks_found": 0, "output_error": "normalized_query missing"})
         if run_id:
             try:
                 trace_service.log_event(
-                    run_id=run_id,
-                    node_name="rag",
-                    event_type="error",
+                    run_id=run_id, node_name="rag", event_type="error",
                     payload={"error": "normalized_query missing"}
                 )
             except Exception:
                 pass
         return state
-    
-    node_start("rag")
+
     logger.info(
         "rag_node started",
         agent_node="rag",
@@ -116,6 +166,11 @@ def rag_node(state: AgentState) -> AgentState:
             if not query_embedding or len(query_embedding) == 0:
                 logger.error("RAG search: empty embedding generated", run_id=run_id)
                 state["rag_result"] = []
+                _lat = int((time.time() - start_time) * 1000)
+                logger.info("rag_node completed", agent_node="rag", run_id=run_id,
+                           chunks_found=0, avg_similarity=0.0, latency_ms=round(_lat, 2),
+                           payload={"input_normalized_query": normalized.normalized_query[:200],
+                                    "output_chunks_found": 0, "output_avg_similarity": 0.0, "output_error": "Empty embedding"})
                 if run_id:
                     try:
                         trace_service.log_event(
@@ -140,6 +195,11 @@ def rag_node(state: AgentState) -> AgentState:
                 error_type=type(e).__name__
             )
             state["rag_result"] = []
+            _lat = int((time.time() - start_time) * 1000)
+            logger.info("rag_node completed", agent_node="rag", run_id=run_id,
+                       chunks_found=0, avg_similarity=0.0, latency_ms=round(_lat, 2),
+                       payload={"input_normalized_query": normalized.normalized_query[:200],
+                                "output_chunks_found": 0, "output_avg_similarity": 0.0, "output_error": str(e)[:100]})
             if run_id:
                 try:
                     trace_service.log_event(
@@ -149,21 +209,81 @@ def rag_node(state: AgentState) -> AgentState:
                 except Exception:
                     pass
             return state
-        
+
         user_id = request.get("user_id", "") if isinstance(request, dict) else getattr(request, "user_id", "")
-        
+
         if not user_id:
             logger.error("RAG search: user_id missing", run_id=run_id)
             state["rag_result"] = []
+            _lat = int((time.time() - start_time) * 1000)
+            logger.info("rag_node completed", agent_node="rag", run_id=run_id,
+                       chunks_found=0, avg_similarity=0.0, latency_ms=round(_lat, 2),
+                       payload={"input_normalized_query": normalized.normalized_query[:200],
+                                "output_chunks_found": 0, "output_error": "user_id missing"})
             return state
-        
+
         match_threshold = _get_rag_threshold()
-        chunks = rag_service.search_chunks(
-            query_embedding=query_embedding, user_id=user_id,
-            organization_id=None, project_id=None, experiment_id=None,
-            match_threshold=match_threshold, match_count=6
+        project_ids, experiment_ids = _entity_ids_from_sql_state(state)
+        id_filtered_chunks: List[Dict[str, Any]] = []
+        if experiment_ids or project_ids:
+            for eid in experiment_ids:
+                try:
+                    ch = rag_service.search_chunks(
+                        query_embedding=query_embedding,
+                        user_id=user_id,
+                        project_id=None,
+                        experiment_id=eid,
+                        match_threshold=match_threshold,
+                        match_count=RAG_TOP_CHUNKS_PER_ENTITY,
+                        return_below_threshold_for_entity=True,
+                    )
+                    id_filtered_chunks.extend(ch)
+                except Exception as e:
+                    logger.warning("RAG ID fetch failed for experiment", experiment_id=eid[:8], error=str(e), run_id=run_id)
+            for pid in project_ids:
+                try:
+                    ch = rag_service.search_chunks(
+                        query_embedding=query_embedding,
+                        user_id=user_id,
+                        project_id=pid,
+                        experiment_id=None,
+                        match_threshold=match_threshold,
+                        match_count=RAG_TOP_CHUNKS_PER_ENTITY,
+                        return_below_threshold_for_entity=True,
+                    )
+                    id_filtered_chunks.extend(ch)
+                except Exception as e:
+                    logger.warning("RAG ID fetch failed for project", project_id=pid[:8], error=str(e), run_id=run_id)
+            if id_filtered_chunks:
+                logger.info(
+                    "RAG UUID-filtered fetch",
+                    run_id=run_id,
+                    experiment_ids=len(experiment_ids),
+                    project_ids=len(project_ids),
+                    id_chunks=len(id_filtered_chunks),
+                )
+
+        chunks_semantic = rag_service.search_chunks(
+            query_embedding=query_embedding,
+            user_id=user_id,
+            organization_id=None,
+            project_id=None,
+            experiment_id=None,
+            match_threshold=match_threshold,
+            match_count=RAG_TOP_CHUNKS,
         )
-        
+        seen_chunk_ids: Set[str] = set()
+        merged: List[Dict[str, Any]] = []
+        for c in id_filtered_chunks + chunks_semantic:
+            cid = c.get("id")
+            if cid and cid in seen_chunk_ids:
+                continue
+            if cid:
+                seen_chunk_ids.add(cid)
+            merged.append(c)
+        merged.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+        chunks = merged[: max(RAG_TOP_CHUNKS, len(id_filtered_chunks))]
+
         # Deduplicate by experiment_id (keep highest similarity)
         seen_experiments = {}
         deduplicated = []
@@ -178,7 +298,31 @@ def rag_node(state: AgentState) -> AgentState:
         
         deduplicated.extend(seen_experiments.values())
         deduplicated.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
-        final_chunks = deduplicated[:6]
+        final_chunks = deduplicated[:RAG_TOP_CHUNKS]
+        
+        # RAG-weak gate: empty, or max similarity below threshold, or low coverage (chunks too short)
+        max_sim = max([c.get("similarity", 0.0) for c in final_chunks], default=0.0)
+        avg_content_len = (
+            sum(len(c.get("content", "") or "") for c in final_chunks) / len(final_chunks)
+            if final_chunks else 0
+        )
+        min_content_len = getattr(get_app_config(), "agent_rag_weak_min_content_len", RAG_WEAK_MIN_AVG_CONTENT_LEN)
+        rag_weak = (
+            len(final_chunks) == 0
+            or max_sim < match_threshold
+            or (final_chunks and avg_content_len < min_content_len)
+        )
+        if rag_weak:
+            flags = state.get("flags") or {}
+            flags["rag_weak"] = True
+            state["flags"] = flags
+            logger.info(
+                "rag_node: rag_weak flag set",
+                run_id=run_id,
+                chunks=len(final_chunks),
+                max_sim=round(max_sim, 3),
+                avg_content_len=round(avg_content_len, 0),
+            )
         
         rag_result = []
         for chunk in final_chunks:
@@ -187,14 +331,13 @@ def rag_node(state: AgentState) -> AgentState:
                 "source_type": chunk.get("source_type"),
                 "source_id": chunk.get("source_id"),
                 "experiment_id": chunk.get("experiment_id"),
-                "content": chunk.get("content", "")[:500],
+                "content": chunk.get("content", "")[:RAG_CHUNK_CONTENT_TRUNCATE],
                 "similarity": chunk.get("similarity", 0.0),
                 "metadata": chunk.get("metadata", {})
             })
         
         latency_ms = int((time.time() - start_time) * 1000)
         avg_similarity = sum(c.get("similarity", 0.0) for c in final_chunks) / len(final_chunks) if final_chunks else 0.0
-        node_end("rag", latency_ms, f"chunks={len(final_chunks)}")
         logger.info("rag_node completed", agent_node="rag", run_id=run_id,
                    chunks_found=len(final_chunks), avg_similarity=round(avg_similarity, 3),
                    latency_ms=round(latency_ms, 2),
@@ -202,7 +345,34 @@ def rag_node(state: AgentState) -> AgentState:
                            "output_chunks_found": len(final_chunks), "output_avg_similarity": round(avg_similarity, 3),
                            "output_top_similarity": round(max([c.get("similarity", 0.0) for c in final_chunks], default=0.0), 3) if final_chunks else 0.0})
         state["rag_result"] = rag_result
-        
+        # Accumulate chunks for summarizer (complete context across retries)
+        rag_chunks_all = state.get("rag_chunks_all") or []
+        state["rag_chunks_all"] = list(rag_chunks_all) + list(rag_result)
+        attempted = state.get("attempted_tools") or []
+        if TOOL_RAG not in attempted:
+            attempted.append(TOOL_RAG)
+            state["attempted_tools"] = attempted
+
+        run_log = state.get("run_process_log") or []
+        run_log.append({
+            "phase": "rag",
+            "attempt": state.get("retry_count", 0),
+            "chunks_count": len(rag_result),
+            "latency_ms": latency_ms,
+        })
+        state["run_process_log"] = run_log
+        run_cits = state.get("run_citations") or []
+        for chunk in rag_result:
+            if isinstance(chunk, dict) and chunk.get("source_id") is not None:
+                run_cits.append({
+                    "source_type": chunk.get("source_type", "unknown"),
+                    "source_id": str(chunk.get("source_id")),
+                    "chunk_id": chunk.get("chunk_id"),
+                    "relevance": float(chunk.get("similarity", 0.0)),
+                    "excerpt": (chunk.get("content") or "")[:200],
+                })
+        state["run_citations"] = run_cits
+
         thinking_logger = get_thinking_logger()
         if run_id:
             thinking_logger.log_analysis(

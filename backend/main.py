@@ -33,7 +33,9 @@ def console_renderer(logger, name, event_dict):
         return ""
     if "error" in event_dict or "thinking_type" in event_dict:
         return ""
-    event = event_dict.get("event", "")
+    event = (event_dict.get("event") or event_dict.get("message") or "")
+    if not isinstance(event, str):
+        event = str(event)
     node = event_dict.get("agent_node", "unknown").upper()
     payload = event_dict.get("payload") or {}
     latency_ms = event_dict.get("latency_ms")
@@ -41,37 +43,36 @@ def console_renderer(logger, name, event_dict):
     if "started" in event.lower():
         print(f"[NODE] {node} → start", flush=True)
         return ""
-    # Only full block for "completed" events
-    if not (event.endswith("_completed") or event.endswith(" completed") or event == "completed"):
+    # Full block for any "completed" event (including "router_node completed (out_of_scope)" etc.)
+    if "completed" not in event.lower():
         return ""
     input_items = {k.replace("input_", ""): v for k, v in payload.items() if isinstance(k, str) and k.startswith("input_")}
     output_items = {k.replace("output_", ""): v for k, v in payload.items() if isinstance(k, str) and k.startswith("output_")}
-    
-    # If no output_items, try to extract from event_dict directly
+    # Fallback: pull from event_dict so we always have INPUT/OUTPUT for every node
+    if not input_items:
+        in_candidates = {}
+        for key in ("query", "intent", "normalized_query", "answer_length", "citations_count", "has_summary", "has_judge"):
+            if key in event_dict and event_dict[key] is not None:
+                in_candidates[key] = event_dict[key]
+        if in_candidates:
+            input_items = in_candidates
     if not output_items:
-        # Extract meaningful output from event_dict fields
-        output_candidates = {}
-        if "intent" in event_dict:
-            output_candidates["intent"] = event_dict.get("intent")
-        if "tools" in event_dict:
-            output_candidates["tools"] = event_dict.get("tools")
-        if "row_count" in event_dict:
-            output_candidates["row_count"] = event_dict.get("row_count")
-        if "chunks_found" in event_dict:
-            output_candidates["chunks_found"] = event_dict.get("chunks_found")
-        if "answer_length" in event_dict:
-            output_candidates["answer_length"] = event_dict.get("answer_length")
-        if "verdict" in event_dict:
-            output_candidates["verdict"] = event_dict.get("verdict")
-        if "confidence" in event_dict:
-            output_candidates["confidence"] = event_dict.get("confidence")
-        if output_candidates:
-            output_items = output_candidates
-    
+        out_candidates = {}
+        for key in (
+            "intent", "tools", "confidence", "reasoning", "row_count", "has_error", "chunks_found",
+            "avg_similarity", "answer_length", "citations_count", "verdict", "answer_preview",
+            "tool_used", "route",
+        ):
+            if key in event_dict and event_dict[key] is not None:
+                out_candidates[key] = event_dict[key]
+        if "output_generated_sql" in payload:
+            out_candidates["generated_sql"] = payload.get("output_generated_sql", "")
+        if out_candidates:
+            output_items = out_candidates
     # Special handling for SQL node - show generated SQL
-    if node == "SQL" and "output_generated_sql" in payload:
+    if node == "SQL" and ("output_generated_sql" in payload or "generated_sql" in event_dict):
         if "generated_sql" not in output_items:
-            output_items["generated_sql"] = payload.get("output_generated_sql", "")
+            output_items["generated_sql"] = payload.get("output_generated_sql") or event_dict.get("generated_sql", "")
     
     print("-" * 8)
     print(f"🤖 {node}")
@@ -108,9 +109,10 @@ def console_renderer(logger, name, event_dict):
             else:
                 print(f"   • {key}: {value}")
     
+    if latency_ms is None and isinstance(payload.get("latency_ms"), (int, float)):
+        latency_ms = payload.get("latency_ms")
     if latency_ms is not None:
         print(f"⏱️  Latency: {latency_ms}ms")
-    
     print("=" * 80)
     return ""
 

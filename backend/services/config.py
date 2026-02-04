@@ -322,6 +322,14 @@ class AppConfig:
         # Agent configuration
         self.rag_similarity_threshold = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.30"))
         self.normalize_temperature = float(os.getenv("NORMALIZE_TEMPERATURE", "0.0"))
+        self.agent_max_retries = int(os.getenv("AGENT_MAX_RETRIES", "2"))
+        self.agent_recursion_limit = int(os.getenv("AGENT_RECURSION_LIMIT", "50"))
+        self.agent_enrichment_threshold = float(os.getenv("AGENT_ENRICHMENT_THRESHOLD", "0.20"))
+        self.agent_rag_weak_min_content_len = int(os.getenv("AGENT_RAG_WEAK_MIN_CONTENT_LEN", "80"))
+        # Optional: disable judge to save 1 LLM call per request (faster, less quality gate)
+        self.agent_judge_enabled = os.getenv("AGENT_JUDGE_ENABLED", "true").lower() in ("true", "1", "yes")
+        # Optional: disable anchor expansion in hybrid flow to save time (~10s when SQL has data)
+        self.agent_anchor_expansion_enabled = os.getenv("AGENT_ANCHOR_EXPANSION_ENABLED", "true").lower() in ("true", "1", "yes")
         
         # Worker configuration
         self.chunk_worker_batch_size = int(os.getenv("CHUNK_WORKER_BATCH_SIZE", "10"))
