@@ -22,10 +22,7 @@ try:
 except ImportError:
     pass
 
-from agents.api.routes import router as agent_router
-from literature_routes import router as literature_router
-from transcribe_routes import router as transcribe_router
-from chat_routes import router as chat_router
+from api import agent_router, chat_router, literature_router, transcribe_router
 
 load_dotenv()
 
