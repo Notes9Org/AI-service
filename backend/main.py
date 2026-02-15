@@ -22,8 +22,7 @@ try:
 except ImportError:
     pass
 
-from agents.api.routes import router as agent_router
-from literature_routes import router as literature_router
+from api import agent_router, chat_router, literature_router
 
 load_dotenv()
 
@@ -241,6 +240,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 app.include_router(agent_router)
 app.include_router(literature_router)
+app.include_router(chat_router)
 
 
 @app.get("/health", tags=["monitoring"])
@@ -283,9 +283,13 @@ async def root() -> Dict[str, Any]:
         "version": "1.0.0",
         "status": "operational",
         "endpoints": {
-            "agent": {"run": "/agent/run", "normalize_test": "/agent/normalize/test"},
-            "literature": {"search": "/literature/search"},
-            "monitoring": {"health": "/health", "readiness": "/health/ready"},
+            "agent": {"run": "POST /agent/run", "auth": "Bearer token required"},
+            "literature": {"search": "GET /literature/search"},
+            "chat": {
+                "post": "POST /chat",
+                "description": "Send messages and optional system prompt; receive Claude/LLM assistant reply. Bearer token required.",
+            },
+            "monitoring": {"health": "GET /health", "readiness": "GET /health/ready"},
             "documentation": {"swagger": "/docs", "redoc": "/redoc"},
         },
     }

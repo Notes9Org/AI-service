@@ -1,17 +1,15 @@
 """API routes for agent."""
 import time
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 import structlog
 
-from agents.contracts.request import AgentRequest, ChatMessage
+from agents.contracts.request import AgentRequest
 from agents.contracts.response import FinalResponse
 from agents.graph.state import AgentState
 from agents.graph.build_graph import build_agent_graph
-from agents.graph.nodes.normalize import normalize_node
+from services.auth import CurrentUser, get_current_user
 from services.trace_service import TraceService
-from pydantic import BaseModel
-from typing import Optional, List
 
 logger = structlog.get_logger()
 
@@ -19,14 +17,6 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 # Singleton graph (compiled once)
 _agent_graph = None
-
-
-class NormalizeTestRequest(BaseModel):
-    """Request model for normalize testing."""
-    query: str
-    user_id: str = "test-user"
-    session_id: str = "test-session"
-    history: Optional[List[ChatMessage]] = None
 
 
 def get_agent_graph():
@@ -37,71 +27,30 @@ def get_agent_graph():
     return _agent_graph
 
 
-@router.post("/normalize/test")
-async def test_normalize(request: NormalizeTestRequest):
-    """Test normalize node directly without running full agent."""
-    run_id = str(uuid4())
-    
-    state: AgentState = {
-        "run_id": run_id,
-        "request": {
-            "query": request.query,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "scope": {},
-            "history": [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in (request.history or [])],
-            "options": {}
-        },
-        "normalized_query": None,
-        "router_decision": None,
-        "sql_result": None,
-        "rag_result": None,
-        "summary": None,
-        "judge_result": None,
-        "retry_count": 0,
-        "final_response": None,
-        "trace": []
-    }
-    
-    try:
-        result = normalize_node(state)
-        normalized = result.get("normalized_query")
-        
-        if normalized:
-            return {
-                "success": True,
-                "input": {"query": request.query},
-                "output": {
-                    "intent": normalized.intent,
-                    "normalized_query": normalized.normalized_query,
-                    "entities": normalized.entities,
-                    "context": normalized.context,
-                    "history_summary": normalized.history_summary
-                }
-            }
-        else:
-            error_msg = result.get("final_response", {}).get("answer", "Unknown error") if result.get("final_response") else "No output generated"
-            return {"success": False, "error": error_msg}
-    except Exception as e:
-        logger.error("normalize test failed", error=str(e), query=request.query)
-        return {"success": False, "error": str(e)}
-
-
 @router.post("/run", response_model=FinalResponse)
-async def run_agent(request: AgentRequest) -> FinalResponse:
+async def run_agent(
+    request: AgentRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> FinalResponse:
     """Execute agent graph: normalize → router → tools → summarizer → judge → final."""
     start_time = time.time()
     run_id = str(uuid4())
     trace_service = TraceService()
-    
-    logger.info("agent_run started", run_id=run_id, query=request.query[:100])
-    
+    # user_id is required: from request or auth; when provided in request must match authenticated user
+    user_id = request.user_id or current_user.user_id
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required (from auth or request)")
+    if request.user_id and request.user_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="user_id cannot differ from authenticated user")
+    session_id = request.session_id
+    logger.info("agent_run started", run_id=run_id, query=request.query[:100], user_id=user_id, session_id=session_id)
+
     try:
         try:
             trace_service.create_run(
                 run_id=run_id,
                 organization_id=None,
-                created_by=request.user_id,
+                created_by=user_id,
                 session_id=request.session_id,
                 query=request.query,
                 project_id=None
@@ -113,8 +62,8 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
             "run_id": run_id,
             "request": {
                 "query": request.query,
-                "user_id": request.user_id,
-                "session_id": request.session_id,
+                "user_id": user_id,
+                "session_id": session_id,
                 "scope": {},
                 "history": [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in request.history],
                 "options": request.options or {}

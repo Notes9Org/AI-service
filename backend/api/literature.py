@@ -2,13 +2,14 @@
 
 Exposes an endpoint for literature search using Brave Search API.
 Returns results in a structured JSON format compatible with the frontend
-SearchPaper type.
+SearchPaper type. Requires Bearer token (Supabase Auth).
 """
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from services.auth import CurrentUser, get_current_user
 from services.brave_search_service import search_literature
 
 router = APIRouter(prefix="/literature", tags=["literature"])
@@ -26,6 +27,7 @@ class LiteratureSearchResponse(BaseModel):
 async def literature_search(
     q: str = Query(..., min_length=1, description="Search query for literature topic"),
     limit: int = Query(default=20, ge=1, le=50, description="Max number of results (1–50)"),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> LiteratureSearchResponse:
     """
     Search for literature related to a topic using Brave Search.

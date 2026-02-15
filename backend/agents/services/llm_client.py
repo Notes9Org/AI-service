@@ -2,7 +2,7 @@
 import json
 import time
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 import structlog
 
@@ -182,6 +182,63 @@ class LLMClient:
         if not out or "text" not in out[0]:
             raise LLMError("Empty or invalid response from Bedrock")
         return out[0]["text"]
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+    ) -> str:
+        """
+        Multi-turn chat: pass list of {"role": "user"|"assistant", "content": "..."}.
+        Returns the assistant reply text.
+        """
+        model = model or self.default_deployment
+        if self._provider == "bedrock":
+            converse_messages = []
+            for m in messages:
+                role = (m.get("role") or "user").lower()
+                if role not in ("user", "assistant"):
+                    role = "user"
+                content = m.get("content") or ""
+                converse_messages.append({"role": role, "content": [{"text": content}]})
+            system_content = [{"text": system}] if system else []
+            inference_config = {"maxTokens": self.max_completion_tokens}
+            if temperature != 1.0:
+                inference_config["temperature"] = temperature
+            response = self.client.converse(
+                modelId=model,
+                messages=converse_messages,
+                system=system_content if system_content else None,
+                inferenceConfig=inference_config,
+            )
+            out = response.get("output", {}).get("message", {}).get("content", [])
+            if not out or "text" not in out[0]:
+                raise LLMError("Empty or invalid response from Bedrock")
+            return (out[0]["text"] or "").strip()
+        else:
+            # Azure OpenAI
+            openai_messages = []
+            if system:
+                openai_messages.append({"role": "system", "content": system})
+            for m in messages:
+                role = (m.get("role") or "user").lower()
+                if role == "system" and openai_messages and openai_messages[0].get("role") == "system":
+                    continue
+                openai_messages.append({"role": role, "content": m.get("content") or ""})
+            request_params = {
+                "model": model,
+                "messages": openai_messages,
+                "timeout": 60.0,
+                "temperature": temperature,
+                "max_completion_tokens": self.max_completion_tokens,
+            }
+            response = self.client.chat.completions.create(**request_params)
+            content = response.choices[0].message.content
+            if not content:
+                raise LLMError("Empty response from LLM")
+            return content.strip()
 
     @retry(
         stop=stop_after_attempt(3),

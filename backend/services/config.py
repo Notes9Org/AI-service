@@ -274,6 +274,7 @@ class SupabaseConfig:
         """Initialize Supabase configuration."""
         self.url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
         self.service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        self.jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "").strip() or None
         
         if not self.url or not self.service_key:
             raise ConfigurationError(
