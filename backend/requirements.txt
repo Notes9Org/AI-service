@@ -17,9 +17,6 @@ openai>=1.12.0
 # AWS Bedrock (when LLM_PROVIDER=bedrock)
 boto3>=1.34.0
 
-# AWS Transcribe Streaming (live transcription)
-amazon-transcribe>=0.6.0
-
 # Text processing
 beautifulsoup4==4.12.2
 lxml==4.9.3

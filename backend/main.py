@@ -22,7 +22,7 @@ try:
 except ImportError:
     pass
 
-from api import agent_router, chat_router, literature_router, transcribe_router
+from api import agent_router, chat_router, literature_router
 
 load_dotenv()
 
@@ -240,7 +240,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 app.include_router(agent_router)
 app.include_router(literature_router)
-app.include_router(transcribe_router)
 app.include_router(chat_router)
 
 
@@ -286,10 +285,6 @@ async def root() -> Dict[str, Any]:
         "endpoints": {
             "agent": {"run": "POST /agent/run", "auth": "Bearer token required"},
             "literature": {"search": "GET /literature/search"},
-            "transcribe": {
-                "stream": "WebSocket /transcribe/stream?token=<access_token>",
-                "description": "Live speech-to-text via WebSocket.",
-            },
             "chat": {
                 "post": "POST /chat",
                 "description": "Send messages and optional system prompt; receive Claude/LLM assistant reply. Bearer token required.",
