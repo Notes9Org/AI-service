@@ -16,6 +16,7 @@ ENV/
 
 # IDE
 .vscode/
+.cursor/
 .idea/
 *.swp
 *.swo
@@ -34,8 +35,9 @@ Thumbs.db
 *.log
 logs/
 
-# Docker
+# Docker (backend/.dockerignore is committed for CI)
 .dockerignore
+!backend/.dockerignore
 
 # Testing
 .pytest_cache/
