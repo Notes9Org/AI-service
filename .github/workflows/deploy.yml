@@ -6,15 +6,16 @@ on:
       - main
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'notes9-agent-chat' }}
-  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || 'notes9-agent-chat' }}
+  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
 
 jobs:
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
+    environment: AWS connection
     outputs:
       image: ${{ steps.build-image.outputs.image }}
 
@@ -48,6 +49,7 @@ jobs:
     name: Deploy to ECS
     runs-on: ubuntu-latest
     needs: build-and-push
+    environment: AWS connection
 
     steps:
       - name: Configure AWS credentials
