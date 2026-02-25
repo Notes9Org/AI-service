@@ -1,20 +1,40 @@
-name: Deploy to ECS
+name: Deploy to Lambda
 
 on:
   push:
     branches:
       - main
 
+concurrency:
+  group: deploy-lambda-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || 'notes9-agent-chat' }}
-  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
-  ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || 'notes9-catalyst' }}
+  LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME || 'notes9-agent' }}
 
 jobs:
+  validate:
+    name: Validate secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        run: |
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "::error::AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required"
+            exit 1
+          fi
+          if [ -z "${{ secrets.LAMBDA_FUNCTION_NAME }}" ]; then
+            echo "::error::LAMBDA_FUNCTION_NAME secret is required"
+            exit 1
+          fi
+          echo "Secrets validated"
+
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
+    needs: validate
     environment: AWS connection
     outputs:
       image: ${{ steps.build-image.outputs.image }}
@@ -40,13 +60,18 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./backend
+          docker build --platform linux/arm64 --provenance=false --sbom=false \
+            -f ./backend/Dockerfile.lambda \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            ./backend
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          DIGEST=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG --query 'imageDetails[0].imageDigest' --output text)
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY@$DIGEST" >> $GITHUB_OUTPUT
 
   deploy:
-    name: Deploy to ECS
+    name: Deploy to Lambda
     runs-on: ubuntu-latest
     needs: build-and-push
     environment: AWS connection
@@ -59,9 +84,32 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Update ECS service
+      - name: Update Lambda function code
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
-            --force-new-deployment
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --image-uri ${{ needs.build-and-push.outputs.image }}
+
+      - name: Wait for Lambda update
+        run: |
+          aws lambda wait function-updated-v2 \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
+
+      - name: Update Lambda configuration (timeout, memory)
+        run: |
+          aws lambda update-function-configuration \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --timeout 120 \
+            --memory-size 2048
+
+      - name: Wait for configuration update
+        run: |
+          aws lambda wait function-updated-v2 \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
+
+      - name: Verify deployment
+        run: |
+          aws lambda get-function \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --query 'Configuration.[State, LastUpdateStatus, LastUpdateStatusReason]' \
+            --output table

@@ -1,5 +1,6 @@
 """FastAPI application for Notes9 Agent Chat Service."""
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any
@@ -116,6 +117,8 @@ def console_renderer(logger, name, event_dict):
 from services.config import get_app_config, get_llm_provider, get_azure_openai_config, get_bedrock_config, get_supabase_config
 
 app_config = get_app_config()
+if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    app_config.log_format = "json"
 use_json = app_config.log_format == "json"
 
 structlog.configure(
