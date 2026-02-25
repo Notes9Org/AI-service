@@ -67,8 +67,7 @@ jobs:
             ./backend
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          DIGEST=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG --query 'imageDetails[0].imageDigest' --output text)
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY@$DIGEST" >> $GITHUB_OUTPUT
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   deploy:
     name: Deploy to Lambda
@@ -85,10 +84,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update Lambda function code
+        env:
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image }}
         run: |
           aws lambda update-function-code \
-            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-            --image-uri ${{ needs.build-and-push.outputs.image }}
+            --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" \
+            --image-uri "$IMAGE_URI"
 
       - name: Wait for Lambda update
         run: |
