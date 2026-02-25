@@ -33,7 +33,7 @@ jobs:
 
   build-and-push:
     name: Build and Push to ECR
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     needs: validate
     environment: AWS connection
     outputs:
@@ -60,7 +60,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build --provenance=false --sbom=false \
+          docker build --platform linux/arm64 --provenance=false --sbom=false \
             -f ./backend/Dockerfile.lambda \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
