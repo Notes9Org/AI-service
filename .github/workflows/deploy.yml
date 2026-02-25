@@ -85,8 +85,10 @@ jobs:
 
       - name: Update Lambda function code
         env:
-          IMAGE_URI: ${{ needs.build-and-push.outputs.image }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
+          REPO_URI=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryUri' --output text)
+          IMAGE_URI="${REPO_URI}:${IMAGE_TAG}"
           aws lambda update-function-code \
             --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" \
             --image-uri "$IMAGE_URI"
