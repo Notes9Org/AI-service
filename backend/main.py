@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from dotenv import load_dotenv
 import structlog
+from mangum import Mangum
 import uvicorn
 
 # Ensure INFO logs are emitted (structlog may use stdlib underneath)
@@ -297,6 +298,7 @@ async def root() -> Dict[str, Any]:
         },
     }
 
+handler = Mangum(app)
 
 if __name__ == "__main__":
     app_config = get_app_config()
