@@ -36,12 +36,8 @@ async def run_agent(
     start_time = time.time()
     run_id = str(uuid4())
     trace_service = TraceService()
-    # user_id is required: from request or auth; when provided in request must match authenticated user
-    user_id = request.user_id or current_user.user_id
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required (from auth or request)")
-    if request.user_id and request.user_id != current_user.user_id:
-        raise HTTPException(status_code=403, detail="user_id cannot differ from authenticated user")
+    # user_id: always use authenticated user from JWT (ignore request.user_id to avoid client mismatch)
+    user_id = current_user.user_id
     session_id = request.session_id
     logger.info("agent_run started", run_id=run_id, query=request.query[:100], user_id=user_id, session_id=session_id)
 
