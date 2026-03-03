@@ -1,21 +1,21 @@
-# Deploy Notes9 Agent (FastAPI) to AWS Lambda.
-# AWS Transcribe: Lambda must have IAM permissions (transcribe:StartStreamTranscriptionWebSocket
-# or lambda:InvokeFunction) and env vars: AWS_TRANSCRIBE_SERVICE_URL or AWS_TRANSCRIBE_LAMBDA_FUNCTION_NAME.
-name: Deploy to Lambda
+name: Deploy Worker
 
 on:
   push:
     branches:
-      - main
+      - worker
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-worker.yml'
 
 concurrency:
-  group: deploy-lambda-${{ github.ref }}
+  group: deploy-worker-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || 'notes9-catalyst' }}
-  LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME || 'notes9-agent' }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_WORKER || secrets.ECR_REPOSITORY || 'notes9-worker' }}
+  LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME_WORKER || 'notes9-chunk-worker' }}
 
 jobs:
   validate:
@@ -28,14 +28,10 @@ jobs:
             echo "::error::AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required"
             exit 1
           fi
-          if [ -z "${{ secrets.LAMBDA_FUNCTION_NAME }}" ]; then
-            echo "::error::LAMBDA_FUNCTION_NAME secret is required"
-            exit 1
-          fi
           echo "Secrets validated"
 
   build-and-push:
-    name: Build and Push to ECR
+    name: Build and Push Worker to ECR
     runs-on: ubuntu-latest
     needs: validate
     environment: AWS connection
@@ -57,22 +53,24 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image
+      - name: Build and push worker image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: worker-${{ github.sha }}
         run: |
-          docker build -f ./backend/Dockerfile.lambda \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            ./backend
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+          docker build --provenance=false -f ./worker/Dockerfile \
+            -t "${IMAGE_URI}" \
+            -t "${IMAGE_LATEST}" \
+            ./worker
+          docker push "${IMAGE_URI}"
+          docker push "${IMAGE_LATEST}"
+          echo "image=${IMAGE_URI}" >> $GITHUB_OUTPUT
 
   deploy:
-    name: Deploy to Lambda
+    name: Deploy Worker to Lambda
     runs-on: ubuntu-latest
     needs: build-and-push
     environment: AWS connection
@@ -87,13 +85,13 @@ jobs:
 
       - name: Update Lambda function code
         env:
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: worker-${{ github.sha }}
         run: |
-          REPO_URI=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryUri' --output text)
+          REPO_URI=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryUri' --output text --region ${{ env.AWS_REGION }})
           IMAGE_URI="${REPO_URI}:${IMAGE_TAG}"
           aws lambda update-function-code \
             --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" \
-            --image-uri "$IMAGE_URI"
+            --image-uri "${IMAGE_URI}"
 
       - name: Wait for Lambda update
         run: |
@@ -104,7 +102,7 @@ jobs:
         run: |
           aws lambda update-function-configuration \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-            --timeout 120 \
+            --timeout 300 \
             --memory-size 2048
 
       - name: Wait for configuration update

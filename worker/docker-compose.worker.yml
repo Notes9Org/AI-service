@@ -1,0 +1,11 @@
+# Run from worker/: docker-compose -f docker-compose.worker.yml up
+# Ensure worker/.env exists: cp .env.example .env (or cp ../backend/.env .env)
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notes9-worker
+    env_file:
+      - .env
+    restart: unless-stopped
