@@ -11,7 +11,7 @@ postgrest==0.13.0
 # JWT verification (Supabase Auth Bearer token)
 PyJWT>=2.8.0
 
-# AWS Bedrock (when LLM_PROVIDER=bedrock)
+# AWS Bedrock
 boto3>=1.34.0
 
 # Text processing

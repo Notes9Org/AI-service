@@ -115,7 +115,7 @@ def console_renderer(logger, name, event_dict):
     print("=" * 80)
     return ""
 
-from services.config import get_app_config, get_llm_provider, get_azure_openai_config, get_bedrock_config, get_supabase_config
+from services.config import get_app_config, get_llm_provider, get_bedrock_config, get_supabase_config
 
 app_config = get_app_config()
 if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
@@ -149,24 +149,18 @@ async def lifespan(app: FastAPI):
         logger.error("Supabase service: not available", error=str(e))
     
     try:
+        # Only Bedrock is supported as LLM provider.
         provider = get_llm_provider()
-        if provider == "bedrock":
-            cfg = get_bedrock_config()
-            logger.info(
-                "LLM: AWS Bedrock",
-                provider="bedrock",
-                chat_model=cfg.get_chat_model_id(),
-                embedding_model=cfg.get_embedding_model(),
-                region=cfg.region,
-            )
-        else:
-            cfg = get_azure_openai_config()
-            logger.info(
-                "LLM: Azure OpenAI",
-                provider="azure",
-                chat_deployment=cfg.chat_deployment,
-                endpoint=cfg.endpoint,
-            )
+        if provider != "bedrock":
+            logger.warning("Unsupported LLM_PROVIDER; defaulting to 'bedrock'", provider=provider)
+        cfg = get_bedrock_config()
+        logger.info(
+            "LLM: AWS Bedrock",
+            provider="bedrock",
+            chat_model=cfg.get_chat_model_id(),
+            embedding_model=cfg.get_embedding_model(),
+            region=cfg.region,
+        )
     except Exception as e:
         logger.error("LLM/embedding service: not available", error=str(e))
     

@@ -1,5 +1,5 @@
 """
-Claude (Bedrock) / Azure OpenAI chat endpoint.
+Claude (AWS Bedrock) chat endpoint.
 
 POST /chat: send user message content and optional history; receive assistant reply.
 Requires Bearer token (Supabase Auth).
@@ -14,7 +14,7 @@ import structlog
 
 from agents.services.llm_client import LLMClient, LLMError
 from services.auth import CurrentUser, get_current_user
-from services.config import get_llm_provider, get_bedrock_config, get_azure_openai_config
+from services.config import get_bedrock_config
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -82,12 +82,8 @@ async def chat(
     session_id = request.session_id
     logger.info("chat_request", user_id=user_id, session_id=session_id, content_len=len(request.content), history_len=len(request.history))
     messages = [{"role": m.role, "content": m.content} for m in request.history] + [{"role": "user", "content": request.content}]
-    provider = get_llm_provider()
-    model_id = (
-        get_bedrock_config().get_chat_model_id()
-        if provider == "bedrock"
-        else get_azure_openai_config().get_chat_model_id()
-    )
+    # Only Bedrock is supported as provider; use its configured chat model.
+    model_id = get_bedrock_config().get_chat_model_id()
     try:
         client = LLMClient()
         content = client.chat(
