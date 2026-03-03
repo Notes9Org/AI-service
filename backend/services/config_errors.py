@@ -1,4 +1,4 @@
-"""Shared configuration exception (used by config, aws_config, azure_config)."""
+"""Shared configuration exception (used by config and aws_config)."""
 
 
 class ConfigurationError(Exception):

@@ -1,8 +1,8 @@
 """
-Re-index semantic_chunks embeddings with the current embedder (Azure or Bedrock per LLM_PROVIDER).
+Re-index semantic_chunks embeddings with the current Bedrock embedder.
 
-Use this after switching embedding models (e.g. Azure text-embedding-3-small → Bedrock Cohere).
-Query and index embeddings must come from the same model; otherwise RAG finds 0 chunks.
+Use this after switching Bedrock embedding models so that query and index
+embeddings come from the same model (otherwise RAG finds 0 chunks).
 
 Run from project root (backend):
   python -m scripts.reindex_embeddings
