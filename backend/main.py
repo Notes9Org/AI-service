@@ -24,7 +24,7 @@ try:
 except ImportError:
     pass
 
-from api import agent_router, chat_router, literature_router
+from api import agent_router, aws_transcribe_router, chat_router
 
 load_dotenv()
 
@@ -243,8 +243,8 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(agent_router)
-app.include_router(literature_router)
 app.include_router(chat_router)
+app.include_router(aws_transcribe_router)
 
 
 @app.get("/health", tags=["monitoring"])
@@ -288,10 +288,13 @@ async def root() -> Dict[str, Any]:
         "status": "operational",
         "endpoints": {
             "agent": {"run": "POST /agent/run", "auth": "Bearer token required"},
-            "literature": {"search": "GET /literature/search"},
             "chat": {
                 "post": "POST /chat",
                 "description": "Send messages and optional system prompt; receive Claude/LLM assistant reply. Bearer token required.",
+            },
+            "AWS_transcribe": {
+                "createSession": "POST /AWS_transcribe",
+                "description": "Create a Transcribe session for streaming dictation. Returns stream_url for WebSocket. Bearer token required.",
             },
             "monitoring": {"health": "GET /health", "readiness": "GET /health/ready"},
             "documentation": {"swagger": "/docs", "redoc": "/redoc"},
