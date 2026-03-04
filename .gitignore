@@ -49,3 +49,6 @@ dist/
 build/
 *.egg-info/
 .eggs/
+
+# Biomni datalake (Phase 1 local storage)
+data/
