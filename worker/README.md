@@ -89,28 +89,45 @@ Ensure the role has:
 - Target: your Lambda function
 - Payload: `{}`
 
-**Option B: Supabase Webhook (event-driven)**
-- **API Gateway** → Create HTTP API
-- Create route: `POST /process-jobs` → integrate with Lambda
-- Use the API URL in Supabase Database Webhooks (see below)
+**Option B: Supabase Webhook (event-driven) – recommended**
+- **Lambda Function URL** (simplest): Lambda → Configuration → Function URL → Create
+- Or **API Gateway** → Create HTTP API → route `POST /process-jobs` → Lambda integration
+- Use the URL in Supabase Database Webhooks (see below)
 
 ---
 
-### Supabase Setup
+### Lambda Function URL Setup (for Supabase Webhook)
 
-#### If using EventBridge (polling)
-- No Supabase changes needed
+1. Open **Lambda** → your function (`notes9-worker-lambda`)
+2. **Configuration** tab → **Function URL** (left sidebar)
+3. Click **Create function URL**
+4. **Auth type**: `NONE` (or `IAM` if you add auth in Supabase)
+5. **CORS**: Optional – enable if needed
+6. Click **Save**
+7. Copy the **Function URL** (e.g. `https://xxx.lambda-url.us-east-1.on.aws/`)
+
+---
+
+### Supabase Webhook Setup
+
+1. **Supabase Dashboard** → **Database** → **Webhooks**
+2. Click **Create a new webhook**
+3. **Name**: `trigger-chunk-worker`
+4. **Table**: `chunk_jobs`
+5. **Events**: check **Insert**
+6. **Type**: HTTP Request
+7. **URL**: paste your Lambda Function URL from above
+8. **HTTP method**: `POST`
+9. Click **Create webhook**
+
+Flow: Your Supabase function inserts into `chunk_jobs` → webhook fires → POST to Lambda URL → worker processes jobs → updates status to `completed`/`failed` → Lambda exits.
+
+---
+
+### Supabase Setup (if using EventBridge polling)
+
+- No Supabase webhook needed
 - Lambda polls `chunk_jobs` on schedule
-
-#### If using Supabase Webhook (event-driven)
-1. **Database** → **Webhooks** → Create new webhook
-2. **Name**: `trigger-chunk-worker`
-3. **Table**: `chunk_jobs`
-4. **Events**: `Insert`
-5. **Type**: `HTTP Request`
-6. **URL**: API Gateway URL (e.g. `https://xxx.execute-api.us-east-1.amazonaws.com/process-jobs`)
-7. **HTTP method**: `POST`
-8. **Headers**: add auth header (e.g. `x-webhook-secret`) if you add auth in Lambda
 
 ---
 
@@ -147,10 +164,9 @@ Add to `.github/workflows/deploy-worker.yml`:
 | **AWS ECR** | Create `notes9-worker` repo |
 | **AWS Lambda** | Create function from container image, set timeout/memory and env vars |
 | **AWS IAM** | Ensure Lambda role has Bedrock access |
-| **AWS EventBridge** | Create rule to invoke Lambda on schedule (if polling) |
-| **AWS API Gateway** | Create HTTP API + Lambda integration (if webhook) |
-| **Supabase** | Create webhook on `chunk_jobs` INSERT → API Gateway URL (if webhook) |
-| **GitHub** | Add `ECR_REPOSITORY_WORKER` and `LAMBDA_FUNCTION_NAME_WORKER` secrets |
+| **Lambda Function URL** | Create URL (Configuration → Function URL) for Supabase webhook |
+| **Supabase** | Create webhook on `chunk_jobs` INSERT → Lambda Function URL |
+| **GitHub** | Add `LAMBDA_FUNCTION_NAME_WORKER` = `notes9-worker-lambda` (if different from default) |
 
 ---
 
