@@ -1,0 +1,133 @@
+# Deploy Chunk Worker to AWS Lambda.
+# Uses environment "worker-production" - configure ECR_REPOSITORY, LAMBDA_FUNCTION_NAME there.
+name: Deploy Worker
+
+on:
+  push:
+    branches:
+      - worker
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-worker.yml'
+
+concurrency:
+  group: deploy-worker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  validate:
+    name: Validate secrets
+    runs-on: ubuntu-latest
+    environment: worker-production
+    steps:
+      - name: Check required secrets
+        run: |
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "::error::AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required"
+            exit 1
+          fi
+          if [ -z "${{ secrets.ECR_REPOSITORY }}" ]; then
+            echo "::error::ECR_REPOSITORY is required in worker-production environment"
+            exit 1
+          fi
+          if [ -z "${{ secrets.LAMBDA_FUNCTION_NAME }}" ]; then
+            echo "::error::LAMBDA_FUNCTION_NAME is required in worker-production environment"
+            exit 1
+          fi
+          echo "Worker secrets validated"
+
+  build-and-push:
+    name: Build and Push Worker to ECR
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: worker-production
+    env:
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push worker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: worker-${{ github.sha }}
+        run: |
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          IMAGE_LATEST="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+          docker build --provenance=false -f ./worker/Dockerfile \
+            -t "${IMAGE_URI}" \
+            -t "${IMAGE_LATEST}" \
+            ./worker
+          docker push "${IMAGE_URI}"
+          docker push "${IMAGE_LATEST}"
+          echo "image=${IMAGE_URI}" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy Worker to Lambda
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: worker-production
+    env:
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Lambda function code
+        env:
+          IMAGE_TAG: worker-${{ github.sha }}
+        run: |
+          REPO_URI=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryUri' --output text --region ${{ env.AWS_REGION }})
+          IMAGE_URI="${REPO_URI}:${IMAGE_TAG}"
+          aws lambda update-function-code \
+            --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" \
+            --image-uri "${IMAGE_URI}"
+
+      - name: Wait for Lambda update
+        run: |
+          aws lambda wait function-updated-v2 \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
+
+      - name: Update Lambda configuration (timeout, memory)
+        run: |
+          aws lambda update-function-configuration \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --timeout 300 \
+            --memory-size 2048
+
+      - name: Wait for configuration update
+        run: |
+          aws lambda wait function-updated-v2 \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
+
+      - name: Verify deployment
+        run: |
+          aws lambda get-function \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --query 'Configuration.[State, LastUpdateStatus, LastUpdateStatusReason]' \
+            --output table

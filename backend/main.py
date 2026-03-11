@@ -1,5 +1,6 @@
 """FastAPI application for Notes9 Agent Chat Service."""
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any
@@ -9,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from dotenv import load_dotenv
 import structlog
+from mangum import Mangum
 import uvicorn
 
 # Ensure INFO logs are emitted (structlog may use stdlib underneath)
@@ -22,8 +24,7 @@ try:
 except ImportError:
     pass
 
-from agents.api.routes import router as agent_router
-from literature_routes import router as literature_router
+from api import agent_router, aws_transcribe_router, chat_router
 
 load_dotenv()
 
@@ -116,9 +117,11 @@ def console_renderer(logger, name, event_dict):
     print("=" * 80)
     return ""
 
-from services.config import get_app_config, get_llm_provider, get_azure_openai_config, get_bedrock_config, get_supabase_config
+from services.config import get_app_config, get_llm_provider, get_bedrock_config, get_supabase_config
 
 app_config = get_app_config()
+if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    app_config.log_format = "json"
 use_json = app_config.log_format == "json"
 
 structlog.configure(
@@ -148,24 +151,18 @@ async def lifespan(app: FastAPI):
         logger.error("Supabase service: not available", error=str(e))
     
     try:
+        # Only Bedrock is supported as LLM provider.
         provider = get_llm_provider()
-        if provider == "bedrock":
-            cfg = get_bedrock_config()
-            logger.info(
-                "LLM: AWS Bedrock",
-                provider="bedrock",
-                chat_model=cfg.get_chat_model_id(),
-                embedding_model=cfg.get_embedding_model(),
-                region=cfg.region,
-            )
-        else:
-            cfg = get_azure_openai_config()
-            logger.info(
-                "LLM: Azure OpenAI",
-                provider="azure",
-                chat_deployment=cfg.chat_deployment,
-                endpoint=cfg.endpoint,
-            )
+        if provider != "bedrock":
+            logger.warning("Unsupported LLM_PROVIDER; defaulting to 'bedrock'", provider=provider)
+        cfg = get_bedrock_config()
+        logger.info(
+            "LLM: AWS Bedrock",
+            provider="bedrock",
+            chat_model=cfg.get_chat_model_id(),
+            embedding_model=cfg.get_embedding_model(),
+            region=cfg.region,
+        )
     except Exception as e:
         logger.error("LLM/embedding service: not available", error=str(e))
     
@@ -242,7 +239,8 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(agent_router)
-app.include_router(literature_router)
+app.include_router(chat_router)
+app.include_router(aws_transcribe_router)
 
 
 @app.get("/health", tags=["monitoring"])
@@ -285,13 +283,27 @@ async def root() -> Dict[str, Any]:
         "version": "1.0.0",
         "status": "operational",
         "endpoints": {
-            "agent": {"run": "/agent/run", "stream": "/agent/stream", "normalize_test": "/agent/normalize/test"},
+            "agent": {
+                "run": "POST /agent/run",
+                "stream": "POST /agent/stream",
+                "normalize_test": "POST /agent/normalize/test",
+                "auth": "Bearer token required",
+            },
+            "chat": {
+                "post": "POST /chat",
+                "description": "Send messages and optional system prompt; receive Claude/LLM assistant reply. Bearer token required.",
+            },
+            "AWS_transcribe": {
+                "createSession": "POST /AWS_transcribe",
+                "description": "Create a Transcribe session for streaming dictation. Returns stream_url for WebSocket. Bearer token required.",
+            },
             "literature": {"search": "/literature/search"},
-            "monitoring": {"health": "/health", "readiness": "/health/ready"},
+            "monitoring": {"health": "GET /health", "readiness": "GET /health/ready"},
             "documentation": {"swagger": "/docs", "redoc": "/redoc"},
         },
     }
 
+handler = Mangum(app)
 
 if __name__ == "__main__":
     app_config = get_app_config()

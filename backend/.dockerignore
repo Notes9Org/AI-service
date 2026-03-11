@@ -9,7 +9,7 @@ env/
 ENV/
 .venv
 
-# Environment variables
+# Environment variables (never bake into image)
 .env
 .env.local
 .env.*.local
@@ -26,18 +26,10 @@ ENV/
 .DS_Store
 .DS_Store?
 ._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
 
 # Logs
 *.log
 logs/
-
-# Docker (backend/.dockerignore is committed for CI)
-.dockerignore
-!backend/.dockerignore
 
 # Testing
 .pytest_cache/
@@ -50,5 +42,9 @@ build/
 *.egg-info/
 .eggs/
 
-# Biomni datalake (Phase 1 local storage)
-data/
+# Git
+.git/
+.gitignore
+
+# Documentation (optional - remove if needed in image)
+*.md

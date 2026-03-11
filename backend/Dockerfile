@@ -1,7 +1,6 @@
 # Multi-stage build for optimized Python FastAPI service
 FROM python:3.11-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
 # Install system dependencies for building Python packages
@@ -22,7 +21,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 # Production stage
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
 # Install runtime dependencies only
@@ -33,7 +31,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 
-# Set environment variables
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -41,21 +38,15 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Create non-root user for security
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 
 # Copy application code
 COPY --chown=appuser:appuser . .
-
-# Switch to non-root user
 USER appuser
 
-# Expose port (default FastAPI port, can be overridden)
 EXPOSE 8000
 
-# Health check - use curl for better reliability
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" || exit 1
 
-# Run the application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

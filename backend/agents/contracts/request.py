@@ -37,24 +37,29 @@ class Scope(BaseModel):
 
 
 class AgentRequest(BaseModel):
-    """Request schema for agent execution."""
+    """Request schema for agent execution - query, session_id, history for memory; user_id required (from auth or request)."""
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "query": "How many experiments were completed last month?",
-                "user_id": "user-123",
                 "session_id": "session-456",
-                "history": []
+                "user_id": "user-uuid-from-auth",
+                "history": [
+                    {"role": "user", "content": "Show me experiment stats"},
+                    {"role": "assistant", "content": "Here are the stats..."}
+                ]
             }
         }
     )
-    
     query: str = Field(..., description="User query to process")
-    user_id: str = Field(..., description="User ID for tracking and context")
     session_id: str = Field(..., description="Session ID for tracking and context")
+    user_id: Optional[str] = Field(
+        default=None,
+        description="User ID for filtering data (required - from auth or request; when provided must match authenticated user)"
+    )
     history: List[ChatMessage] = Field(
         default_factory=list,
-        description="Previous messages in the conversation (optional)"
+        description="Previous messages in the conversation for memory/context"
     )
     scope: Optional[Scope] = Field(
         default=None,

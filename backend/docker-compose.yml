@@ -15,16 +15,3 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
-
-  worker:
-    build: .
-    container_name: notes9-python-worker
-    command: ["python", "worker.py"]
-    environment:
-      - PYTHONUNBUFFERED=1
-    env_file:
-      - .env
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped

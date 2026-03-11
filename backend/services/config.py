@@ -1,6 +1,8 @@
 """Centralized configuration management. Single entry point for all config.
-AWS (Bedrock): services.aws_config.  Azure (OpenAI): services.azure_config.
-Import from this module only; config re-exports from aws_config and azure_config."""
+
+Currently only AWS Bedrock is supported as the LLM provider.
+Import from this module only; config re-exports from aws_config.
+"""
 import os
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
@@ -10,7 +12,6 @@ from psycopg2.extras import RealDictCursor
 
 from services.config_errors import ConfigurationError
 from services.aws_config import BedrockConfig, get_bedrock_config
-from services.azure_config import AzureOpenAIConfig, get_azure_openai_config
 
 # Patch websockets before importing supabase (must be at module level)
 try:
@@ -302,6 +303,7 @@ class SupabaseConfig:
         """Initialize Supabase configuration."""
         self.url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
         self.service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        self.jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "").strip() or None
         
         if not self.url or not self.service_key:
             raise ConfigurationError(
@@ -329,8 +331,11 @@ class SupabaseConfig:
 
 
 def get_llm_provider() -> str:
-    """Return LLM provider: 'azure' or 'bedrock'. Default is 'azure'."""
-    return (os.getenv("LLM_PROVIDER") or "azure").strip().lower()
+    """Return LLM provider identifier.
+
+    Azure support has been removed; this now always returns 'bedrock'.
+    """
+    return "bedrock"
 
 
 class AppConfig:
