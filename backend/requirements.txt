@@ -1,8 +1,8 @@
 # Core dependencies
 fastapi>=0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
+pydantic>=2.5.2,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
 
 # Supabase client
 supabase==2.0.0
@@ -20,11 +20,12 @@ lxml==4.9.3
 html2text==2024.2.26
 
 # LangGraph (agentic framework)
-langgraph==0.0.20
-langchain==0.1.0
+langgraph>=0.2.0,<0.3.0
+langchain-core>=0.3.0
 
 # Database
 psycopg2-binary==2.9.9
+pgvector>=0.2.0
 
 # Utilities
 python-dotenv==1.0.0

@@ -285,7 +285,7 @@ async def root() -> Dict[str, Any]:
         "version": "1.0.0",
         "status": "operational",
         "endpoints": {
-            "agent": {"run": "/agent/run", "normalize_test": "/agent/normalize/test"},
+            "agent": {"run": "/agent/run", "stream": "/agent/stream", "normalize_test": "/agent/normalize/test"},
             "literature": {"search": "/literature/search"},
             "monitoring": {"health": "/health", "readiness": "/health/ready"},
             "documentation": {"swagger": "/docs", "redoc": "/redoc"},

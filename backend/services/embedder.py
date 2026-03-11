@@ -12,6 +12,9 @@ load_dotenv()
 
 logger = structlog.get_logger()
 
+# LRU cache size for query embeddings (repeated queries hit cache)
+EMBEDDING_CACHE_MAX_SIZE = 500
+
 
 def _parse_bedrock_embeddings_response(result: dict, expected_count: int) -> List[List[float]]:
     """Parse Cohere embed-v4 response: embeddings.float or embeddings list."""
@@ -30,6 +33,8 @@ class EmbeddingService:
 
     def __init__(self):
         self._provider = get_llm_provider()
+        self._embedding_cache: dict = {}
+        self._embedding_cache_max = EMBEDDING_CACHE_MAX_SIZE
         if self._provider == "bedrock":
             self.config = get_bedrock_config()
             self.client = self.config.create_bedrock_runtime_client()
@@ -58,13 +63,23 @@ class EmbeddingService:
         wait=wait_exponential(multiplier=1, min=4, max=10),
     )
     def embed_text(self, text: str) -> List[float]:
-        """Generate embedding for a single text."""
+        """Generate embedding for a single text. Uses LRU cache for repeated queries."""
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
-
+        key = text.strip()
+        cached = self._embedding_cache.get(key)
+        if cached is not None:
+            logger.debug("Embedding cache hit", key_len=len(key))
+            return cached
         if self._provider == "bedrock":
-            return self._embed_text_bedrock(text.strip())
-        return self._embed_text_azure(text.strip())
+            result = self._embed_text_bedrock(key)
+        else:
+            result = self._embed_text_azure(key)
+        if len(self._embedding_cache) >= self._embedding_cache_max:
+            oldest = next(iter(self._embedding_cache))
+            del self._embedding_cache[oldest]
+        self._embedding_cache[key] = result
+        return result
 
     def _invoke_bedrock_embed(self, body: str, model_id: str) -> dict:
         """Invoke Bedrock embedding; retry with model_id:0 if model identifier invalid."""

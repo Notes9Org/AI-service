@@ -94,7 +94,35 @@ class DatabaseConfig:
                 "   NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co\n"
                 "2. Or set DB_HOST with a Supabase host that contains the project reference."
             )
-    
+
+    def get_pool_connection_params(self) -> tuple:
+        """
+        Return (args, kwargs) for psycopg2.connect, for use with ThreadedConnectionPool.
+        ThreadedConnectionPool(minconn, maxconn, *args, **kwargs) passes args/kwargs to connect.
+        """
+        if self.database_url:
+            return (self.database_url,), {"connect_timeout": 10}
+        self._validate()
+        db_host = self.db_host
+        db_user = self.db_user
+        db_password = self.db_password
+        db_name = self.db_name
+        db_port = self.db_port
+        if self.use_pooler and self.project_ref:
+            if db_user == "postgres" or not os.getenv("DB_USER"):
+                db_user = f"postgres.{self.project_ref}"
+            if not db_host or ".pooler.supabase.com" not in (db_host or ""):
+                db_host = f"aws-0-us-east-1.pooler.supabase.com"
+        return (), {
+            "host": db_host or self.db_host,
+            "port": db_port,
+            "user": db_user,
+            "password": db_password,
+            "database": db_name,
+            "connect_timeout": 10,
+            "sslmode": "require",
+        }
+
     def get_connection(self, autocommit: bool = True) -> psycopg2.extensions.connection:
         """
         Create and return a PostgreSQL connection.

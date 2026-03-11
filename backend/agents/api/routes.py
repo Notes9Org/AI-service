@@ -1,7 +1,11 @@
 """API routes for agent."""
+import asyncio
+import json
 import time
+from queue import Empty, Queue
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 import structlog
 
 from agents.contracts.request import AgentRequest, ChatMessage
@@ -139,11 +143,15 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
             "run_citations": [],
             "trace": []
         }
-        
+
         graph = get_agent_graph()
-        final_state = graph.invoke(initial_state)
+
+        def _invoke_graph():
+            return graph.invoke(initial_state)
+
+        final_state = await asyncio.to_thread(_invoke_graph)
         final_response = final_state.get("final_response")
-        
+
         if not final_response:
             from agents.constants import TOOL_RAG, CONFIDENCE_ERROR_OR_MISSING
             final_response = FinalResponse(
@@ -152,7 +160,7 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
                 confidence=CONFIDENCE_ERROR_OR_MISSING,
                 tool_used=TOOL_RAG
             )
-        
+
         total_latency_ms = int((time.time() - start_time) * 1000)
         trace_service.update_run_status(
             run_id=run_id,
@@ -161,10 +169,10 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
             tool_used=final_response.tool_used,
             total_latency_ms=total_latency_ms
         )
-        
+
         logger.info("agent_run completed", run_id=run_id, confidence=final_response.confidence)
         return final_response
-        
+
     except HTTPException:
         trace_service.update_run_status(run_id=run_id, status="failed", total_latency_ms=int((time.time() - start_time) * 1000))
         raise
@@ -172,3 +180,137 @@ async def run_agent(request: AgentRequest) -> FinalResponse:
         trace_service.update_run_status(run_id=run_id, status="failed", total_latency_ms=int((time.time() - start_time) * 1000))
         logger.error("agent_run failed", run_id=run_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
+
+
+def _format_sse(event_type: str, data: dict) -> str:
+    """Format a Server-Sent Event."""
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_agent_generator(request: AgentRequest):
+    """Async generator that runs the agent graph and yields SSE events."""
+    queue: Queue = Queue()
+    run_id = str(uuid4())
+    trace_service = TraceService()
+
+    def stream_callback(event_type: str, data: dict):
+        queue.put((event_type, data))
+
+    initial_state: AgentState = {
+        "run_id": run_id,
+        "request": {
+            "query": request.query,
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "scope": {},
+            "history": [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in request.history],
+            "options": request.options or {}
+        },
+        "normalized_query": None,
+        "router_decision": None,
+        "sql_result": None,
+        "rag_result": None,
+        "sql_runs": [],
+        "rag_chunks_all": [],
+        "summary": None,
+        "judge_result": None,
+        "retry_count": 0,
+        "attempted_tools": [],
+        "flags": None,
+        "retry_context": None,
+        "best_summary": None,
+        "best_judge_result": None,
+        "best_tool_used": None,
+        "final_response": None,
+        "run_process_log": [],
+        "run_citations": [],
+        "trace": [],
+        "stream_callback": stream_callback,
+    }
+
+    try:
+        trace_service.create_run(
+            run_id=run_id,
+            organization_id=None,
+            created_by=request.user_id,
+            session_id=request.session_id,
+            query=request.query,
+            project_id=None
+        )
+    except Exception as e:
+        logger.warning("Trace logging failed, continuing", error=str(e))
+
+    final_state_ref = {"value": None}
+
+    def run_graph():
+        graph = get_agent_graph()
+        final_state = graph.invoke(initial_state)
+        final_state_ref["value"] = final_state
+        queue.put(("done", None))
+
+    task = asyncio.to_thread(run_graph)
+
+    async def run_and_collect():
+        await task
+
+    graph_task = asyncio.create_task(run_and_collect())
+
+    try:
+        while True:
+            try:
+                event_type, data = queue.get(timeout=0.1)
+            except Empty:
+                if graph_task.done():
+                    break
+                yield _format_sse("ping", {"ts": time.time()})
+                continue
+
+            if event_type == "done":
+                break
+
+            if event_type == "thinking":
+                yield _format_sse("thinking", data)
+            elif event_type == "token":
+                yield _format_sse("token", data)
+            elif event_type == "error":
+                yield _format_sse("error", data)
+
+        await graph_task
+
+        final_state = final_state_ref["value"]
+        final_response = final_state.get("final_response") if final_state else None
+
+        if not final_response:
+            from agents.constants import TOOL_RAG, CONFIDENCE_ERROR_OR_MISSING
+            final_response = FinalResponse(
+                answer="Agent execution completed but no response generated.",
+                citations=[],
+                confidence=CONFIDENCE_ERROR_OR_MISSING,
+                tool_used=TOOL_RAG
+            )
+
+        trace_service.update_run_status(
+            run_id=run_id,
+            status="completed",
+            final_confidence=final_response.confidence,
+            tool_used=final_response.tool_used,
+        )
+
+        yield _format_sse("done", final_response.model_dump())
+    except Exception as e:
+        logger.error("agent_stream failed", run_id=run_id, error=str(e))
+        yield _format_sse("error", {"error": str(e)})
+
+
+@router.post("/stream")
+async def stream_agent(request: AgentRequest):
+    """Execute agent with SSE streaming: thinking events, then final response."""
+    return StreamingResponse(
+        _stream_agent_generator(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

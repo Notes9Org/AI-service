@@ -2,7 +2,7 @@
 import json
 import time
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Iterator
 from tenacity import retry, stop_after_attempt, wait_exponential
 import structlog
 
@@ -252,3 +252,89 @@ class LLMClient:
                 latency_ms=round(latency_ms, 2),
             )
             raise LLMError(f"LLM completion failed: {str(e)}")
+
+    def complete_text_stream(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+    ) -> Iterator[str]:
+        """
+        Generate text output from prompt, yielding tokens as they arrive.
+        Supports Bedrock converse_stream and Azure streaming.
+        """
+        model = model or self.default_deployment
+        if self._provider == "bedrock":
+            yield from self._converse_stream_bedrock(
+                model=model,
+                system="You are a helpful assistant.",
+                user=prompt,
+                temperature=temperature,
+            )
+        else:
+            yield from self._complete_text_stream_azure(model, prompt, temperature)
+
+    def _converse_stream_bedrock(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        temperature: float = 0.7,
+    ) -> Iterator[str]:
+        """Stream text from Bedrock ConverseStream API."""
+        messages = [{"role": "user", "content": [{"text": user}]}]
+        system_content = [{"text": system}]
+        inference_config = {"maxTokens": self.max_completion_tokens}
+        if temperature != 1.0:
+            inference_config["temperature"] = temperature
+        try:
+            response = self.client.converse_stream(
+                modelId=model,
+                messages=messages,
+                system=system_content,
+                inferenceConfig=inference_config,
+            )
+            stream = response.get("stream")
+            if stream:
+                for event in stream:
+                    if "contentBlockDelta" in event:
+                        delta = event["contentBlockDelta"].get("delta", {})
+                        text = delta.get("text", "")
+                        if text:
+                            yield text
+        except Exception as e:
+            logger.error("Bedrock stream failed", error=str(e), model=model)
+            raise LLMError(f"Stream failed: {str(e)}") from e
+
+    def _complete_text_stream_azure(
+        self,
+        model: str,
+        prompt: str,
+        temperature: float,
+    ) -> Iterator[str]:
+        """Stream text from Azure OpenAI chat completions."""
+        request_params = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": True,
+            "timeout": 60.0,
+        }
+        if temperature != 1.0:
+            request_params["temperature"] = temperature
+        try:
+            request_params["max_completion_tokens"] = self.max_completion_tokens
+        except Exception:
+            pass
+        try:
+            stream = self.client.chat.completions.create(**request_params)
+            for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if hasattr(delta, "content") and delta.content:
+                        yield delta.content
+        except Exception as e:
+            logger.error("Azure stream failed", error=str(e), model=model)
+            raise LLMError(f"Stream failed: {str(e)}") from e
