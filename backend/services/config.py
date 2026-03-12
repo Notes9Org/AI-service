@@ -95,7 +95,35 @@ class DatabaseConfig:
                 "   NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co\n"
                 "2. Or set DB_HOST with a Supabase host that contains the project reference."
             )
-    
+
+    def get_pool_connection_params(self) -> tuple:
+        """
+        Return (args, kwargs) for psycopg2.connect, for use with ThreadedConnectionPool.
+        ThreadedConnectionPool(minconn, maxconn, *args, **kwargs) passes args/kwargs to connect.
+        """
+        if self.database_url:
+            return (self.database_url,), {"connect_timeout": 10}
+        self._validate()
+        db_host = self.db_host
+        db_user = self.db_user
+        db_password = self.db_password
+        db_name = self.db_name
+        db_port = self.db_port
+        if self.use_pooler and self.project_ref:
+            if db_user == "postgres" or not os.getenv("DB_USER"):
+                db_user = f"postgres.{self.project_ref}"
+            if not db_host or ".pooler.supabase.com" not in (db_host or ""):
+                db_host = f"aws-0-us-east-1.pooler.supabase.com"
+        return (), {
+            "host": db_host or self.db_host,
+            "port": db_port,
+            "user": db_user,
+            "password": db_password,
+            "database": db_name,
+            "connect_timeout": 10,
+            "sslmode": "require",
+        }
+
     def get_connection(self, autocommit: bool = True) -> psycopg2.extensions.connection:
         """
         Create and return a PostgreSQL connection.
@@ -327,6 +355,14 @@ class AppConfig:
         # Agent configuration
         self.rag_similarity_threshold = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.30"))
         self.normalize_temperature = float(os.getenv("NORMALIZE_TEMPERATURE", "0.0"))
+        self.agent_max_retries = int(os.getenv("AGENT_MAX_RETRIES", "2"))
+        self.agent_recursion_limit = int(os.getenv("AGENT_RECURSION_LIMIT", "50"))
+        self.agent_enrichment_threshold = float(os.getenv("AGENT_ENRICHMENT_THRESHOLD", "0.20"))
+        self.agent_rag_weak_min_content_len = int(os.getenv("AGENT_RAG_WEAK_MIN_CONTENT_LEN", "80"))
+        # Optional: disable judge to save 1 LLM call per request (faster, less quality gate)
+        self.agent_judge_enabled = os.getenv("AGENT_JUDGE_ENABLED", "true").lower() in ("true", "1", "yes")
+        # Optional: disable anchor expansion in hybrid flow to save time (~10s when SQL has data)
+        self.agent_anchor_expansion_enabled = os.getenv("AGENT_ANCHOR_EXPANSION_ENABLED", "true").lower() in ("true", "1", "yes")
         
         # Worker configuration
         self.chunk_worker_batch_size = int(os.getenv("CHUNK_WORKER_BATCH_SIZE", "10"))

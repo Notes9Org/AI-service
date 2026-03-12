@@ -3,6 +3,7 @@ import time
 import structlog
 from typing import Dict
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
 from agents.graph.nodes.normalize import get_llm_client
 from services.trace_service import TraceService
 from agents.services.thinking_logger import get_thinking_logger
@@ -23,6 +24,7 @@ def get_trace_service() -> TraceService:
 
 def judge_node(state: AgentState) -> AgentState:
     """Validate answer quality: factual consistency, citations, completeness."""
+    emit_stream_event(state, "thinking", {"node": "judge", "status": "started", "message": "Validating answer..."})
     start_time = time.time()
     summary = state.get("summary")
     sql_result = state.get("sql_result")
@@ -43,7 +45,16 @@ def judge_node(state: AgentState) -> AgentState:
             "suggested_revision": None
         }
         state["judge_result"] = judge_output
-        
+        # Stream thinking for UI: validation result while loading
+        emit_stream_event(state, "thinking", {
+            "node": "judge",
+            "status": "completed",
+            "message": f"Validation: {judge_output['verdict']}",
+            "verdict": judge_output["verdict"],
+            "confidence": judge_output["confidence"],
+            "issues": judge_output.get("issues") or [],
+        })
+                
         # Log error event
         if run_id:
             try:
