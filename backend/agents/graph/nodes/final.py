@@ -2,6 +2,7 @@
 import time
 import structlog
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
 from agents.contracts.response import FinalResponse, Citation
 from agents.constants import (
     TOOL_SQL,
@@ -73,6 +74,7 @@ def _best_is_better_than_current(
 def final_node(state: AgentState) -> AgentState:
     """Format final response with answer, citations, confidence, and debug trace.
     Uses best_summary/best_judge_result when current summary was cleared after retries, or when best is better than current (e.g. hybrid vs RAG-only retry)."""
+    emit_stream_event(state, "thinking", {"node": "final", "status": "started", "message": "Formatting response..."})
     start_time = time.time()
     summary = state.get("summary")
     judge = state.get("judge_result")

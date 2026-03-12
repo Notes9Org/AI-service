@@ -201,8 +201,33 @@ def retry_node(state: AgentState) -> AgentState:
     # Skipped-judge path (summarizer → retry on last attempt): pass through so should_retry → final
     if state.get("judge_result") is None and state.get("summary"):
         return state
-    
+
     judge = state.get("judge_result")
+    summary = state.get("summary")
+
+    # Use judge's suggested_revision directly when available — skip full pipeline re-run
+    if judge and judge.get("verdict") != VERDICT_PASS and summary:
+        suggested = judge.get("suggested_revision")
+        if suggested and isinstance(suggested, str) and suggested.strip():
+            # Use the improved answer; keep existing citations (they remain valid)
+            revised_answer = suggested.strip()
+            citations = summary.get("citations") or []
+            state["summary"] = {"answer": revised_answer, "citations": citations}
+            # Mark as pass so should_retry routes to final (no retry loop)
+            state["judge_result"] = {
+                **judge,
+                "verdict": VERDICT_PASS,
+                "confidence": min(judge.get("confidence", 0.5) + 0.1, 1.0),
+                "issues": [],
+                "suggested_revision": None,
+            }
+            logger.info(
+                "retry_node: using judge suggested_revision directly",
+                run_id=state.get("run_id"),
+                answer_length=len(revised_answer),
+            )
+            return state
+
     retry_count = state.get("retry_count", 0)
     request = state["request"]
     run_id = state.get("run_id")

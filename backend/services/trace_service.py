@@ -1,4 +1,5 @@
 """Trace service for persistent agent execution logging."""
+import threading
 import time
 from typing import Optional, Dict, Any, List
 from uuid import uuid4
@@ -62,27 +63,15 @@ class TraceService:
             logger.debug("Failed to create agent run", run_id=run_id, error=str(e))
             return False
     
-    def log_event(
+    def _do_log_event(
         self,
         run_id: str,
         node_name: str,
         event_type: str,
         payload: Dict[str, Any],
-        latency_ms: Optional[int] = None
+        latency_ms: Optional[int] = None,
     ) -> bool:
-        """
-        Log a trace event for a node execution.
-        
-        Args:
-            run_id: UUID string for the run
-            node_name: Name of the node (normalize, router, sql, rag, etc.)
-            event_type: Type of event (input, output, error, metric)
-            payload: Event data as dictionary
-            latency_ms: Optional latency in milliseconds
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Internal: perform the actual Supabase insert."""
         try:
             row = {
                 "run_id": run_id,
@@ -102,6 +91,30 @@ class TraceService:
             else:
                 logger.debug("Failed to log trace event", run_id=run_id, node_name=node_name, error=str(e))
             return False
+
+    def log_event(
+        self,
+        run_id: str,
+        node_name: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        latency_ms: Optional[int] = None,
+        fire_and_forget: bool = True,
+    ) -> bool:
+        """
+        Log a trace event for a node execution.
+        When fire_and_forget=True (default), writes to DB in a background thread to avoid blocking the critical path.
+        """
+        if fire_and_forget:
+            t = threading.Thread(
+                target=self._do_log_event,
+                args=(run_id, node_name, event_type, payload),
+                kwargs={"latency_ms": latency_ms},
+                daemon=True,
+            )
+            t.start()
+            return True
+        return self._do_log_event(run_id, node_name, event_type, payload, latency_ms)
     
     def update_run_status(
         self,

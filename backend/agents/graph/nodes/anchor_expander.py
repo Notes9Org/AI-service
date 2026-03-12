@@ -8,6 +8,7 @@ import time
 import structlog
 from typing import Dict, Any, List, Optional, Set
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
 from agents.graph.nodes.normalize import get_llm_client
 from agents.constants import (
     TOOL_SQL,
@@ -182,6 +183,7 @@ def anchor_expander_node(state: AgentState) -> AgentState:
     """
     After SQL in hybrid flow: analyze result, optionally run targeted RAG, then continue to summarizer.
     """
+    emit_stream_event(state, "thinking", {"node": "anchor_expander", "status": "started", "message": "Fetching related documents..."})
     start_time = time.time()
     sql_result = state.get("sql_result")
     router = state.get("router_decision")

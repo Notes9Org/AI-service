@@ -4,6 +4,7 @@ import re
 from typing import Dict, Any, Optional, List, Tuple
 import structlog
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
 from services.db import SupabaseService
@@ -13,89 +14,82 @@ from agents.services.db_schema import USER_FACING_SCHEMA
 
 logger = structlog.get_logger()
 
+# Pool size: min 1, max 20 connections
+POOL_MIN_CONN = 1
+POOL_MAX_CONN = 20
+
 
 class SQLService:
     """Service for generating and executing SQL queries using LLM."""
-    
+
     def __init__(self, db_service: Optional[SupabaseService] = None, llm_client: Optional[LLMClient] = None):
         """
         Initialize SQL service.
-        
+
         Args:
             db_service: Optional SupabaseService instance. If not provided, creates a new one.
             llm_client: Optional LLMClient instance. If not provided, creates a new one.
         """
         self.db = db_service if db_service else SupabaseService()
         self.llm_client = llm_client if llm_client else LLMClient()
-        
-        # PostgreSQL connection for raw SQL execution
-        self._pg_conn = None
+
         self._db_config = get_database_config()
-        
+        self._pg_pool: Optional[pool.ThreadedConnectionPool] = None
+
         logger.info("SQL service initialized")
     
+    def _get_pg_pool(self) -> pool.ThreadedConnectionPool:
+        """Get or create the connection pool."""
+        if self._pg_pool is not None:
+            return self._pg_pool
+        try:
+            args, kwargs = self._db_config.get_pool_connection_params()
+            self._pg_pool = pool.ThreadedConnectionPool(
+                POOL_MIN_CONN,
+                POOL_MAX_CONN,
+                *args,
+                **kwargs,
+            )
+            logger.info("PostgreSQL connection pool created", minconn=POOL_MIN_CONN, maxconn=POOL_MAX_CONN)
+            return self._pg_pool
+        except ConfigurationError:
+            raise
+        except Exception as e:
+            raise ConfigurationError(
+                f"Database service is not available: Failed to create connection pool. Error: {str(e)}"
+            ) from e
+
     def _get_pg_connection(self, force_new: bool = False):
         """
-        Get or create PostgreSQL connection with autocommit enabled for read-only queries.
-        
-        Args:
-            force_new: If True, always create a new connection (useful after errors)
+        Get a connection from the pool. Autocommit is enabled for read-only queries.
+        Caller must return the connection to the pool via _return_pg_connection.
         """
-        # If forcing new connection, close existing one
-        if force_new:
+        if force_new and self._pg_pool:
             try:
-                if self._pg_conn and not self._pg_conn.closed:
-                    self._pg_conn.close()
+                self._pg_pool.closeall()
             except Exception:
                 pass
-            self._pg_conn = None
-        
-        # Check if connection exists and is valid
-        if self._pg_conn is not None and not self._pg_conn.closed:
-            # Test connection with a simple query to ensure it's in good state
+            self._pg_pool = None
+        p = self._get_pg_pool()
+        conn = p.getconn()
+        conn.autocommit = True
+        return conn
+
+    def _return_pg_connection(self, conn, close: bool = False):
+        """Return a connection to the pool. If close=True, close it instead (e.g. after error)."""
+        if conn is None:
+            return
+        try:
+            if close:
+                conn.close()
+            else:
+                self._pg_pool.putconn(conn)
+        except Exception as e:
+            logger.warning("Error returning connection to pool", error=str(e))
             try:
-                # First ensure autocommit is enabled
-                if not self._pg_conn.autocommit:
-                    self._pg_conn.autocommit = True
-                
-                # Test with a simple query - if this fails, connection is in bad state
-                test_cursor = self._pg_conn.cursor()
-                test_cursor.execute("SELECT 1")
-                test_cursor.fetchone()
-                test_cursor.close()
-                return self._pg_conn
-            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.InternalError) as e:
-                # Connection is broken or in bad state, create new one
-                logger.warning("Connection test failed, creating new connection", error=str(e))
-                try:
-                    self._pg_conn.close()
-                except Exception:
-                    pass
-                self._pg_conn = None
-            except Exception as e:
-                # Any other error - connection might be in bad state
-                logger.warning("Connection test failed with unexpected error, creating new connection", error=str(e))
-                try:
-                    self._pg_conn.close()
-                except Exception:
-                    pass
-                self._pg_conn = None
-        
-        # Create new connection using config
-        if self._pg_conn is None or (hasattr(self._pg_conn, 'closed') and self._pg_conn.closed):
-            try:
-                self._pg_conn = self._db_config.get_connection(autocommit=True)
-                return self._pg_conn
-            except ConfigurationError as e:
-                # Re-raise configuration errors as-is (they already have helpful messages)
-                raise
-            except Exception as e:
-                # Wrap other errors
-                raise ConfigurationError(
-                    f"Database service is not available: Failed to establish connection. Error: {str(e)}"
-                ) from e
-        
-        return self._pg_conn
+                conn.close()
+            except Exception:
+                pass
     
     def _validate_sql_safety(self, sql: str, scope: Dict[str, Optional[str]]) -> Tuple[bool, str]:
         """
@@ -152,183 +146,63 @@ class SQLService:
         if not user_id:
             raise ValueError("user_id is required for SQL generation - security requirement")
         
-        # Build prompt for LLM
+        # Build concise entities section
         entities_text = ""
-        if entities:
-            entities_text = "\n".join([f"- {k}: {v}" for k, v in entities.items()])
-        
-        # Extract entities for query generation (not for filtering)
-        experiment_ids_from_entities = []
+        entity_filters = []
         if entities and isinstance(entities, dict):
-            if "experiment_ids" in entities and isinstance(entities["experiment_ids"], list):
-                experiment_ids_from_entities = entities["experiment_ids"]
-            elif "experiment_id" in entities:
-                exp_id = entities["experiment_id"]
-                if isinstance(exp_id, list):
-                    experiment_ids_from_entities = exp_id
-                elif exp_id:
-                    experiment_ids_from_entities = [exp_id]
-        
-        # Add notes about entities if found (for query generation, not filtering)
-        experiment_id_note = ""
-        if experiment_ids_from_entities:
-            ids_list = ", ".join([f"'{eid}'" for eid in experiment_ids_from_entities[:3]])
-            uuid_list = ", ".join([f"'{eid}'::uuid" for eid in experiment_ids_from_entities])
-            experiment_id_note = f"\n\nIMPORTANT: The query mentions specific experiment ID(s): {ids_list}\nYou MUST filter by these experiment IDs in your WHERE clause using: e.id IN ({uuid_list})"
-        
-        # Check if querying by specific project_id from entities
-        project_id_note = ""
-        project_ids_from_entities = []
-        if entities and isinstance(entities, dict):
-            if "project_ids" in entities and isinstance(entities["project_ids"], list):
-                project_ids_from_entities = entities["project_ids"]
-            elif "project_id" in entities:
-                proj_id = entities["project_id"]
-                if isinstance(proj_id, list):
-                    project_ids_from_entities = proj_id
-                elif proj_id:
-                    project_ids_from_entities = [proj_id]
-        
-        if project_ids_from_entities:
-            ids_list = ", ".join([f"'{pid}'" for pid in project_ids_from_entities[:3]])
-            uuid_list = ", ".join([f"'{pid}'::uuid" for pid in project_ids_from_entities])
-            project_id_note = f"\n\nIMPORTANT: The query mentions specific project ID(s): {ids_list}\nYou MUST filter by these project IDs in your WHERE clause using: p.id IN ({uuid_list})"
-        
-        # Check if querying by experiment names
-        experiment_names_note = ""
-        if entities and isinstance(entities, dict):
-            experiment_names = entities.get("experiment_names", [])
-            if experiment_names and isinstance(experiment_names, list) and len(experiment_names) > 0:
-                names_list = ", ".join([f"'{name}'" for name in experiment_names[:3]])
-                experiment_names_note = f"\n\nIMPORTANT: The query mentions experiment name(s): {names_list}\nYou MUST filter by experiment name using flexible matching that handles spaces, underscores, and case variations.\n\nFor each experiment name, create a pattern that matches both spaces and underscores:\n- Use: REPLACE(LOWER(e.name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<experiment_name>'), '_', ' ') || '%'\n- OR use multiple ILIKE conditions: (e.name ILIKE '%<experiment_name>%' OR e.name ILIKE '%<experiment_name_with_underscores>%')\n\nExample (handles 'Vaccine production' matching 'Vaccine_Production'):\n  SELECT e.* FROM experiments e\n  JOIN projects p ON e.project_id = p.id\n  WHERE (REPLACE(LOWER(e.name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<experiment_name>'), '_', ' ') || '%'\n         OR e.name ILIKE '%<experiment_name>%')"
-        
-        # Check if querying by project names
-        project_names_note = ""
-        if entities and isinstance(entities, dict):
-            project_names = entities.get("project_names", [])
-            if project_names and isinstance(project_names, list) and len(project_names) > 0:
-                names_list = ", ".join([f"'{name}'" for name in project_names[:3]])
-                project_names_note = f"\n\nIMPORTANT: The query mentions project name(s): {names_list}\nYou MUST filter by project name using flexible matching that handles spaces, underscores, and case variations.\n\nFor each project name, create a pattern that matches both spaces and underscores:\n- Use: REPLACE(LOWER(p.name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<project_name>'), '_', ' ') || '%'\n- OR use multiple ILIKE conditions: (p.name ILIKE '%<project_name>%' OR p.name ILIKE '%<project_name_with_underscores>%')\n\nExample for querying projects table directly:\n  SELECT * FROM projects\n  WHERE (REPLACE(LOWER(name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<project_name>'), '_', ' ') || '%'\n         OR name ILIKE '%<project_name>%')\n\nExample for querying through experiments:\n  SELECT e.* FROM experiments e\n  JOIN projects p ON e.project_id = p.id\n  WHERE (REPLACE(LOWER(p.name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<project_name>'), '_', ' ') || '%'\n         OR p.name ILIKE '%<project_name>%')"
-        
-        # Check if querying by person names
-        person_names_note = ""
-        if entities and isinstance(entities, dict):
-            person_names = entities.get("person_names", [])
-            if person_names and isinstance(person_names, list) and len(person_names) > 0:
-                names_list = ", ".join([f"'{name}'" for name in person_names[:3]])
-                person_names_note = f"\n\nIMPORTANT: The query mentions person name(s): {names_list}\nYou MUST join with the profiles table to find experiments/projects by person name.\n\nFor queries about experiments:\n- Join: JOIN profiles pr ON (e.created_by = pr.id OR e.assigned_to = pr.id)\n- Filter by name using ILIKE for case-insensitive matching:\n  * If name has space (e.g., 'John Doe'): Split and match both first_name and last_name, OR match full name\n  * If single word: Match against first_name OR last_name\n  * Use: (pr.first_name ILIKE '%<first_part>%' AND pr.last_name ILIKE '%<second_part>%') OR (CONCAT(pr.first_name, ' ', pr.last_name) ILIKE '%<full_name>%')\n\nExample for 'John Doe':\n  SELECT e.* FROM experiments e\n  JOIN projects p ON e.project_id = p.id\n  JOIN profiles pr ON e.created_by = pr.id\n  WHERE ((pr.first_name ILIKE '%John%' AND pr.last_name ILIKE '%Doe%')\n         OR CONCAT(pr.first_name, ' ', pr.last_name) ILIKE '%John Doe%')"
-        
-        prompt = f"""Generate a PostgreSQL SELECT query to answer the following question about a lab management system.
+            entities_text = "\n".join([f"- {k}: {v}" for k, v in list(entities.items())[:15]])
+            # Concise filter hints
+            exp_ids = list(entities.get("experiment_ids") or []) if isinstance(entities.get("experiment_ids"), list) else []
+            if not exp_ids and entities.get("experiment_id"):
+                eid = entities["experiment_id"]
+                exp_ids = [eid] if not isinstance(eid, list) else eid
+            proj_ids = list(entities.get("project_ids") or []) if isinstance(entities.get("project_ids"), list) else []
+            if not proj_ids and entities.get("project_id"):
+                pid = entities["project_id"]
+                proj_ids = [pid] if not isinstance(pid, list) else pid
+            if exp_ids:
+                uuid_list = ", ".join([f"'{e}'::uuid" for e in exp_ids[:10]])
+                entity_filters.append(f"Filter experiments: e.id IN ({uuid_list})")
+            if proj_ids:
+                uuid_list = ", ".join([f"'{p}'::uuid" for p in proj_ids[:10]])
+                entity_filters.append(f"Filter projects: p.id IN ({uuid_list})")
+            for key in ("experiment_names", "project_names"):
+                vals = entities.get(key)
+                if vals and isinstance(vals, list):
+                    names = ", ".join([str(v)[:50] for v in vals[:5]])
+                    col = "e.name" if "experiment" in key else "p.name"
+                    entity_filters.append(f"Filter by {key} ({names}): use REPLACE(LOWER({col}), '_', ' ') ILIKE '%'||REPLACE(LOWER('<name>'), '_', ' ')||'%'")
+            if entities.get("person_names"):
+                entity_filters.append("Filter by person: JOIN profiles pr ON e.created_by=pr.id, use CONCAT(pr.first_name,' ',pr.last_name) ILIKE '%name%'")
 
-User Query: {query}
-{f"Normalized Query: {normalized_query}" if normalized_query else ""}
-User ID (for security filtering): {user_id}
+        entity_section = "\n".join(entity_filters) if entity_filters else ""
 
-Extracted Entities:
-{entities_text if entities_text else "None"}
+        prompt = f"""Generate a PostgreSQL SELECT query for a lab management system.
 
-{experiment_id_note}
-{experiment_names_note}
-{project_id_note}
-{project_names_note}
-{person_names_note}
+**Query:** {query}
+{f"**Normalized:** {normalized_query}" if normalized_query else ""}
+**User ID (required for security):** {user_id}
 
-Database Schema:
+**Entities:** {entities_text or "None"}
+{entity_section}
+
+**Schema:**
 {USER_FACING_SCHEMA}
 
-CRITICAL REQUIREMENTS:
-1. Query MUST be a SELECT statement only (read-only)
-2. SECURITY: ALWAYS filter by user_id (created_by) - Users can ONLY see their own data
-   - For experiments: WHERE e.created_by = '{user_id}'::uuid
-   - For projects: WHERE p.created_by = '{user_id}'::uuid
-   - For samples: WHERE s.created_by = '{user_id}'::uuid
-   - For lab_notes: WHERE ln.created_by = '{user_id}'::uuid
-   - For protocols: WHERE pr.created_by = '{user_id}'::uuid
-   - For reports: WHERE r.generated_by = '{user_id}'::uuid
-   - For literature_reviews: WHERE lr.created_by = '{user_id}'::uuid
-   - For semantic_chunks: WHERE sc.created_by = '{user_id}'::uuid
-   - If querying multiple tables, ensure ALL are filtered by the user's created_by
-3. Generate queries based on the query intent and extracted entities
-4. If querying experiments, samples, or lab_notes, join through projects as needed
-5. Use proper JOINs to access related tables
-6. Return only the columns needed to answer the query
-7. When returning projects and/or experiments (e.g. summaries, lists, overviews), ALWAYS include p.id AS project_id and/or e.id AS experiment_id in the SELECT so downstream steps can fetch related lab notes and literature. Use table aliases: p for projects, e for experiments.
-8. Use appropriate WHERE clauses based on entities mentioned in the query
-9. Use proper PostgreSQL syntax - UUIDs should be cast with ::uuid
-10. Do NOT include any DROP, DELETE, UPDATE, INSERT, ALTER, or other write operations
-11. Do NOT include comments in the SQL
-12. Do NOT filter by organization_id, project_id, or experiment_id unless explicitly mentioned in the query
+**Rules:**
+1. SELECT only. No DROP/DELETE/UPDATE/INSERT.
+2. SECURITY: Every table MUST filter by created_by = '{user_id}'::uuid (or generated_by for reports).
+3. When returning projects/experiments for summaries, include p.id AS project_id, e.id AS experiment_id.
+4. Use ::uuid for UUID literals. Use table aliases: p=projects, e=experiments, s=samples.
+5. For names: REPLACE(LOWER(col), '_', ' ') ILIKE '%'||REPLACE(LOWER('name'), '_', ' ')||'%' handles spaces/underscores.
+6. No comments in SQL.
 
-Example JOIN patterns:
-- To get a specific experiment by ID (MUST filter by user):
-  SELECT e.* FROM experiments e 
-  JOIN projects p ON e.project_id = p.id 
-  WHERE e.id = '<experiment_id>'::uuid
-    AND e.created_by = '{user_id}'::uuid
-  
-- To get all experiments for the user (MUST filter by user):
-  SELECT e.* FROM experiments e 
-  JOIN projects p ON e.project_id = p.id
-  WHERE e.created_by = '{user_id}'::uuid
-  
-- To get a specific project by ID (MUST filter by user):
-  SELECT * FROM projects
-  WHERE id = '<project_id>'::uuid
-    AND created_by = '{user_id}'::uuid
-  
-- To get all samples for the user (MUST filter by user):
-  SELECT s.* FROM samples s
-  JOIN experiments e ON s.experiment_id = e.id
-  JOIN projects p ON e.project_id = p.id
-  WHERE s.created_by = '{user_id}'::uuid
+**Examples:**
+- All experiments: SELECT e.*, p.id AS project_id FROM experiments e JOIN projects p ON e.project_id=p.id WHERE e.created_by='{user_id}'::uuid
+- By project name: SELECT * FROM projects WHERE REPLACE(LOWER(name),'_',' ') ILIKE '%'||REPLACE(LOWER('X'),'_',' ')||'%' AND created_by='{user_id}'::uuid
+- By person: SELECT e.* FROM experiments e JOIN profiles pr ON e.created_by=pr.id WHERE CONCAT(pr.first_name,' ',pr.last_name) ILIKE '%John%' AND e.created_by='{user_id}'::uuid
 
-- To get experiments created by a person (by name):
-  SELECT e.* FROM experiments e
-  JOIN projects p ON e.project_id = p.id
-  JOIN profiles pr ON e.created_by = pr.id
-  WHERE (pr.first_name ILIKE '%<first_name>%' OR pr.last_name ILIKE '%<last_name>%' 
-         OR CONCAT(pr.first_name, ' ', pr.last_name) ILIKE '%<full_name>%')
-
-- To get experiments assigned to a person (by name):
-  SELECT e.* FROM experiments e
-  JOIN projects p ON e.project_id = p.id
-  JOIN profiles pr ON e.assigned_to = pr.id
-  WHERE (pr.first_name ILIKE '%<first_name>%' OR pr.last_name ILIKE '%<last_name>%'
-         OR CONCAT(pr.first_name, ' ', pr.last_name) ILIKE '%<full_name>%')
-
-- To get experiment by name (handles spaces, underscores, case variations):
-  SELECT e.* FROM experiments e
-  JOIN projects p ON e.project_id = p.id
-  WHERE (REPLACE(LOWER(e.name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<experiment_name>'), '_', ' ') || '%'
-         OR e.name ILIKE '%<experiment_name>%')
-
-- To get project by name (handles spaces, underscores, case variations):
-  SELECT * FROM projects
-  WHERE (REPLACE(LOWER(name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<project_name>'), '_', ' ') || '%'
-         OR name ILIKE '%<project_name>%')
-
-- To get project status by name (handles spaces, underscores, case variations):
-  SELECT status FROM projects
-  WHERE (REPLACE(LOWER(name), '_', ' ') ILIKE '%' || REPLACE(LOWER('<project_name>'), '_', ' ') || '%'
-         OR name ILIKE '%<project_name>%')
-    AND created_by = '{user_id}'::uuid
-
-- To get all active projects for the user (MUST filter by user):
-  SELECT * FROM projects
-  WHERE status = 'active'
-    AND created_by = '{user_id}'::uuid
-
-- To get projects by status (planning, active, on_hold, completed, cancelled):
-  SELECT * FROM projects
-  WHERE status = '<status_value>'
-    AND created_by = '{user_id}'::uuid
-
-- To get current/active projects (status = 'active'):
-  SELECT * FROM projects
-  WHERE status = 'active'
-    AND created_by = '{user_id}'::uuid
-
-Return ONLY the SQL query, no explanations, no markdown, just the SQL statement."""
+Return ONLY the SQL, no markdown, no explanation."""
 
         try:
             # Use text completion for SQL (not JSON). Use SQL-specific model when configured (e.g. Bedrock).
@@ -378,106 +252,62 @@ Return ONLY the SQL query, no explanations, no markdown, just the SQL statement.
             Dict with data, row_count, execution_time_ms, or error
         """
         start_time = time.time()
-        
+        conn = None
         try:
-            # Validate SQL safety (only checks for read-only, no filtering)
             is_safe, error_msg = self._validate_sql_safety(sql, scope)
             if not is_safe:
                 raise ValueError(f"SQL safety validation failed: {error_msg}")
-            
-            # Get PostgreSQL connection (autocommit is enabled, so no transaction issues)
-            # Always get a fresh connection to avoid any state issues from previous queries
+
             conn = self._get_pg_connection(force_new=False)
-            
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # Execute query (autocommit mode means each query runs in its own transaction)
             cursor.execute(sql)
-            
-            # Fetch results
             rows = cursor.fetchall()
-            
-            # Convert to list of dicts
             data = [dict(row) for row in rows]
             row_count = len(data)
-            
             cursor.close()
-            
-            # No need to commit - autocommit is enabled
-            
+            self._return_pg_connection(conn)
+            conn = None
+
             execution_time_ms = (time.time() - start_time) * 1000
-            
             logger.info(
                 "SQL executed successfully",
                 row_count=row_count,
                 execution_time_ms=round(execution_time_ms, 2),
-                sql_full=sql
+                sql_full=sql,
             )
-            
             return {
                 "data": data,
                 "row_count": row_count,
-                "execution_time_ms": round(execution_time_ms, 2)
+                "execution_time_ms": round(execution_time_ms, 2),
             }
-            
+
         except psycopg2.Error as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                self._return_pg_connection(conn, close=True)
+                conn = None
             execution_time_ms = (time.time() - start_time) * 1000
-            
-            # CRITICAL: Reset connection on error to prevent transaction state issues
-            # Even with autocommit, a failed query can leave the connection in a bad state
-            try:
-                if hasattr(self, '_pg_conn') and self._pg_conn and not self._pg_conn.closed:
-                    try:
-                        # Try to rollback any aborted transaction
-                        self._pg_conn.rollback()
-                    except Exception:
-                        pass
-                    self._pg_conn.close()
-            except Exception:
-                pass
-            self._pg_conn = None
-            
-            # Log the error details for debugging
             error_str = str(e)
             if "transaction is aborted" in error_str.lower():
-                logger.warning(
-                    "Connection had aborted transaction - connection will be reset",
-                    error=error_str
-                )
-                # Raise as ConfigurationError with helpful message
+                logger.warning("Connection had aborted transaction", error=error_str)
                 raise ConfigurationError(
-                    f"Database service is not available: Connection has aborted transaction. "
-                    f"This usually means the connection is in a bad state. Error: {error_str}"
+                    f"Database service is not available: Connection has aborted transaction. Error: {error_str}"
                 ) from e
-            
-            logger.error(
-                "SQL execution failed (PostgreSQL error)",
-                error=str(e),
-                execution_time_ms=round(execution_time_ms, 2)
-            )
-            
-            # Raise as ConfigurationError for other database errors
-            raise ConfigurationError(
-                f"Database service is not available: SQL execution failed. Error: {error_str}"
-            ) from e
-            return {
-                "data": [],
-                "row_count": 0,
-                "error": f"PostgreSQL error: {str(e)}",
-                "execution_time_ms": round(execution_time_ms, 2)
-            }
+            logger.error("SQL execution failed (PostgreSQL error)", error=str(e), execution_time_ms=round(execution_time_ms, 2))
+            raise ConfigurationError(f"Database service is not available: SQL execution failed. Error: {error_str}") from e
         except Exception as e:
+            if conn:
+                self._return_pg_connection(conn, close=True)
             execution_time_ms = (time.time() - start_time) * 1000
-            logger.error(
-                "SQL execution failed",
-                error=str(e),
-                execution_time_ms=round(execution_time_ms, 2)
-            )
+            logger.error("SQL execution failed", error=str(e), execution_time_ms=round(execution_time_ms, 2))
             return {
                 "data": [],
                 "row_count": 0,
                 "error": str(e),
-                "execution_time_ms": round(execution_time_ms, 2)
+                "execution_time_ms": round(execution_time_ms, 2),
             }
     
     def generate_and_execute(
@@ -529,11 +359,11 @@ Return ONLY the SQL query, no explanations, no markdown, just the SQL statement.
             }
     
     def __del__(self):
-        """Close PostgreSQL connection on cleanup."""
+        """Close connection pool on cleanup."""
         try:
-            if hasattr(self, '_pg_conn') and self._pg_conn and not self._pg_conn.closed:
-                self._pg_conn.close()
+            if hasattr(self, "_pg_pool") and self._pg_pool:
+                self._pg_pool.closeall()
+                self._pg_pool = None
         except Exception:
-            # Ignore errors during cleanup (Python may be shutting down)
             pass
     

@@ -2,6 +2,7 @@
 import time
 import structlog
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
 from agents.constants import TOOL_SQL, ENTITY_KEYS_FOR_SQL_FALLBACK
 from agents.services.sql_service import SQLService
 from services.trace_service import TraceService
@@ -42,6 +43,7 @@ def _has_structured_entities(normalized) -> bool:
 
 def sql_node(state: AgentState) -> AgentState:
     """Execute SQL tool: generate and execute SQL queries using LLM."""
+    emit_stream_event(state, "thinking", {"node": "sql", "status": "started", "message": "Calling SQL"})
     start_time = time.time()
     router = state.get("router_decision")
     normalized = state.get("normalized_query")
@@ -126,6 +128,15 @@ def sql_node(state: AgentState) -> AgentState:
                    sql_preview=sql_preview,
                    sql_full=generated_sql)
         state["sql_result"] = result
+        # Emit SQL and completed thinking for streaming UI (show query + status while loading)
+        if generated_sql:
+            emit_stream_event(state, "thinking", {
+                "node": "sql",
+                "status": "completed",
+                "message": "Query executed",
+                "sql": generated_sql,
+            })
+            emit_stream_event(state, "sql", {"query": generated_sql})
         # Accumulate this run for summarizer (complete context across retries)
         sql_runs = state.get("sql_runs") or []
         sql_runs = list(sql_runs) + [{

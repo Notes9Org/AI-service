@@ -1,9 +1,14 @@
 """Agent state TypedDict for LangGraph."""
-from typing import TypedDict, Optional, List, Dict, Any
+from typing import TypedDict, Optional, List, Dict, Any, Callable
 from agents.contracts.request import AgentRequest
 from agents.contracts.normalized import NormalizedQuery
 from agents.contracts.router import RouterDecision
 from agents.contracts.response import FinalResponse
+
+
+def _noop_stream_callback(event_type: str, data: Dict[str, Any]) -> None:
+    """Default no-op when streaming is disabled."""
+    pass
 
 
 class AgentState(TypedDict):
@@ -62,3 +67,6 @@ class AgentState(TypedDict):
     
     # Debug trace
     trace: List[Dict[str, Any]]  # Execution trace for debugging
+
+    # Streaming: optional callback(event_type, data) for SSE; called by nodes during execution
+    stream_callback: Optional[Callable[[str, Dict[str, Any]], None]]

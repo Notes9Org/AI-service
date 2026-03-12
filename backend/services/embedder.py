@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from services.config import get_bedrock_config
+from services.config import get_bedrock_config, get_llm_provider
 
 load_dotenv()
 

@@ -132,11 +132,12 @@ def _format_sse(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-async def _stream_agent_generator(request: AgentRequest):
+async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUser):
     """Async generator that runs the agent graph and yields SSE events."""
     queue: Queue = Queue()
     run_id = str(uuid4())
     trace_service = TraceService()
+    user_id = current_user.user_id
 
     def stream_callback(event_type: str, data: dict):
         queue.put((event_type, data))
@@ -145,7 +146,7 @@ async def _stream_agent_generator(request: AgentRequest):
         "run_id": run_id,
         "request": {
             "query": request.query,
-            "user_id": request.user_id,
+            "user_id": user_id,
             "session_id": request.session_id,
             "scope": {},
             "history": [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in request.history],
@@ -177,7 +178,7 @@ async def _stream_agent_generator(request: AgentRequest):
         trace_service.create_run(
             run_id=run_id,
             organization_id=None,
-            created_by=request.user_id,
+            created_by=user_id,
             session_id=request.session_id,
             query=request.query,
             project_id=None
@@ -200,14 +201,21 @@ async def _stream_agent_generator(request: AgentRequest):
 
     graph_task = asyncio.create_task(run_and_collect())
 
+    # Ping only when idle this long (keep-alive); avoid pings every 100ms
+    PING_INTERVAL_SEC = 15.0
+    last_ping = 0.0
+
     try:
         while True:
             try:
-                event_type, data = queue.get(timeout=0.1)
+                event_type, data = queue.get(timeout=0.5)
             except Empty:
                 if graph_task.done():
                     break
-                yield _format_sse("ping", {"ts": time.time()})
+                now = time.time()
+                if now - last_ping >= PING_INTERVAL_SEC:
+                    last_ping = now
+                    yield _format_sse("ping", {"ts": now})
                 continue
 
             if event_type == "done":
@@ -217,6 +225,10 @@ async def _stream_agent_generator(request: AgentRequest):
                 yield _format_sse("thinking", data)
             elif event_type == "token":
                 yield _format_sse("token", data)
+            elif event_type == "sql":
+                yield _format_sse("sql", data)
+            elif event_type == "rag_chunks":
+                yield _format_sse("rag_chunks", data)
             elif event_type == "error":
                 yield _format_sse("error", data)
 
@@ -248,14 +260,17 @@ async def _stream_agent_generator(request: AgentRequest):
 
 
 @router.post("/stream")
-async def stream_agent(request: AgentRequest):
-    """Execute agent with SSE streaming: thinking events, then final response."""
+async def stream_agent(
+    request: AgentRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Execute agent with SSE streaming: thinking events, then final response. Bearer token required."""
     return StreamingResponse(
-        _stream_agent_generator(request),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    _stream_agent_generator(request, current_user=current_user),
+    media_type="text/event-stream",
+    headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    },
+)

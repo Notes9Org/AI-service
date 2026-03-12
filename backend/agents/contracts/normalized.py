@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
 
 DomainKind = Literal["lab", "general", "unknown"]
-IntentKind = Literal["aggregate", "search", "hybrid", "other"]
+IntentKind = Literal["aggregate", "search", "hybrid", "detail", "other"]
 
 
 class NormalizedQuery(BaseModel):
@@ -55,7 +55,7 @@ class NormalizedQuery(BaseModel):
     @classmethod
     def validate_intent(cls, v: str) -> str:
         """Validate intent value."""
-        allowed_intents = ["aggregate", "search", "hybrid", "other"]
+        allowed_intents = ["aggregate", "search", "hybrid", "detail", "other"]
         if v not in allowed_intents:
             raise ValueError(f"Invalid intent: {v}. Must be one of: {allowed_intents}")
         return v

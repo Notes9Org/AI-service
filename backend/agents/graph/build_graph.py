@@ -145,9 +145,9 @@ def build_agent_graph() -> StateGraph:
         }
     )
     
-    # SQL → anchor_expander (hybrid with data, when enabled), RAG (sql_empty), or summarizer
+    # SQL → RAG when in tools (so semantic search runs), else anchor_expander or summarizer
     def route_after_sql(state: AgentState) -> str:
-        """After SQL: hybrid+data → anchor_expander if enabled else summarizer; sql_empty → rag; else summarizer."""
+        """After SQL: sql_empty → rag; when RAG in tools → rag; else anchor_expander or summarizer."""
         router = state.get("router_decision")
         flags = state.get("flags") or {}
         if flags.get("sql_empty"):
@@ -162,10 +162,12 @@ def build_agent_graph() -> StateGraph:
             and (sql_result.get("row_count", 0) or 0) > 0
         )
         anchor_enabled = getattr(get_app_config(), "agent_anchor_expansion_enabled", True)
-        if has_sql and has_rag and has_data and anchor_enabled:
-            return "anchor_expander"
+        # When router selected RAG (detail/hybrid), run RAG so semantic search is used
         if has_rag:
             return "rag"
+        # When only SQL was used and we have data, optionally expand anchors
+        if has_sql and has_data and anchor_enabled:
+            return "anchor_expander"
         return "summarizer"
     
     graph.add_conditional_edges(

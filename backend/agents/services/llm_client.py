@@ -3,10 +3,11 @@
 import json
 import time
 import re
-from typing import Dict, Any, Optional, Iterator
+from typing import Dict, Any, Optional, Iterator, List
 import structlog
 
 from services.config import get_bedrock_config
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = structlog.get_logger()
 

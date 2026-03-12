@@ -2,6 +2,7 @@
 import time
 import structlog
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
 from agents.contracts.router import RouterDecision
 from agents.contracts.response import FinalResponse
 from agents.constants import (
@@ -38,6 +39,7 @@ def get_trace_service() -> TraceService:
 
 def router_node(state: AgentState) -> AgentState:
     """Route to tools based on intent."""
+    emit_stream_event(state, "thinking", {"node": "router", "status": "started", "message": "Choosing data sources..."})
     start_time = time.time()
     normalized = state.get("normalized_query")
     request = state.get("request")
@@ -55,6 +57,15 @@ def router_node(state: AgentState) -> AgentState:
             constraints={}
         )
         state["router_decision"] = decision
+        # Stream thinking for UI: decision and rationale while loading
+        emit_stream_event(state, "thinking", {
+            "node": "router",
+            "status": "completed",
+            "message": f"Route to {', '.join(tools)}",
+            "decision": f"Route to {', '.join(tools)}",
+            "rationale": reasoning,
+            "confidence": confidence,
+        })
         # Log error event
         if run_id:
             try:
@@ -267,6 +278,10 @@ def router_node(state: AgentState) -> AgentState:
             tools = [TOOL_SQL, TOOL_RAG]
             confidence = 0.85
             reasoning = "Intent: hybrid (SQL + RAG) comprehensive analysis."
+        elif normalized.intent == "detail":
+            tools = [TOOL_SQL, TOOL_RAG]
+            confidence = 0.9
+            reasoning = "Intent: detail (tell me about X) — always use both SQL and RAG for comprehensive answer."
         else:
             tools = [TOOL_RAG]
             confidence = 0.5

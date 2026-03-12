@@ -1,9 +1,11 @@
 """Summarizer node for answer synthesis. Keeps prompt bounded so the LLM can handle it."""
+import json
 import re
 import time
 import structlog
 from typing import Dict, Any
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
 from agents.graph.nodes.normalize import get_llm_client
 from agents.constants import (
     TOOL_SQL,
@@ -96,6 +98,7 @@ def _merged_sql_facts_from_runs(sql_runs: list, max_rows: int, max_cell_len: int
 
 def summarizer_node(state: AgentState) -> AgentState:
     """Synthesize answer from all accumulated SQL and RAG context (complete, relevant only)."""
+    emit_stream_event(state, "thinking", {"node": "summarizer", "status": "started", "message": "Synthesizing answer..."})
     start_time = time.time()
     sql_result = state.get("sql_result")
     sql_runs = state.get("sql_runs") or []
@@ -142,6 +145,7 @@ def summarizer_node(state: AgentState) -> AgentState:
         # Data flow: query + all relevant facts (from every SQL run) + all relevant excerpts (from every RAG run)
         query_text = request.get("query", "") if isinstance(request, dict) else getattr(request, "query", "")
         original_query = _safe_str(normalized.normalized_query if normalized else query_text, 2000)
+        history_summary = _safe_str(getattr(normalized, "history_summary", None) if normalized else None, 500)
 
         if sql_runs:
             facts_from_db = _merged_sql_facts_from_runs(
@@ -171,19 +175,31 @@ def summarizer_node(state: AgentState) -> AgentState:
         )
 
         # Keep total prompt within model context to avoid LLMError/RetryError
-        prompt_body = f"""Write a short answer for a lab management system using only the information below.
+        prompt_body = f"""You are a knowledgeable lab assistant. Synthesize a comprehensive, insightful answer from the data below.
 
-User query: {original_query}
+**Approach (think step by step):**
+1. First, analyze the data: What does the database show? What do the documents say?
+2. Identify key findings, relationships, and context that matter for the user's question.
+3. Then write a clear, well-structured answer that explains the significance of findings—not just raw facts.
 
-Facts (from database — use for counts, names, status):
+**User query:** {original_query}
+"""
+        if history_summary:
+            prompt_body += f"""
+**Conversation context:** {history_summary}
+
+"""
+        prompt_body += f"""
+
+**Facts (from database — use for counts, names, status, dates, assignments):**
 {facts_from_db}
 
-Relevant excerpts (from documents — cite as [1], [2], etc. for details):
+**Relevant excerpts (from documents — cite as [1], [2], etc. for details):**
 {relevant_excerpts}"""
         if relevant_followup:
             prompt_body += f"""
 
-Relevant follow-up (lab notes, protocols — cite by source):
+**Relevant follow-up (lab notes, protocols — cite by source):**
 {relevant_followup}"""
         if len(prompt_body) > SUMMARIZER_PROMPT_MAX_CHARS:
             logger.warning(
@@ -198,16 +214,18 @@ Relevant follow-up (lab notes, protocols — cite by source):
         if sql_anchors and not relevant_followup:
             thin_note = " If there is no follow-up (lab notes/protocols), say so in one short sentence."
         rules_and_json = f"""
-Rules:
-1. Use Facts (from database) for counts, names, and status; do not invent data.
-2. Refer to projects and experiments by name only. Never put UUIDs, source_id, or "source_type (uuid):" in the answer text—readers must not see raw IDs.
-3. In the answer text use only [1], [2], etc. as citation markers. Do not copy the excerpt line (e.g. "lab_note (uuid): content") into the answer. Put the excerpt only in the citations array.
-4. When you use content from "Relevant excerpts" or "Relevant follow-up", add a citation with the exact source_type and source_id in the citations array. Include every document you use.
-5. No hallucination: only state what is supported by the data above.{thin_note}
+**Rules:**
+1. Be specific, informative, and natural. Explain the significance of findings—not just list them.
+2. Use bullet points or numbered lists for multiple items. Use headers for complex responses.
+3. Use Facts (from database) for counts, names, status, dates; do not invent data.
+4. Refer to projects and experiments by name only. Never put UUIDs, source_id, or "source_type (uuid):" in the answer text—readers must not see raw IDs.
+5. In the answer text use only [1], [2], etc. as citation markers. Do not copy the excerpt line into the answer. Put the excerpt only in the citations array.
+6. When you use content from "Relevant excerpts" or "Relevant follow-up", add a citation with the exact source_type and source_id in the citations array. Include every document you use.
+7. No hallucination: only state what is supported by the data above.{thin_note}
 
 Return JSON with:
 {{
-  "answer": "Plain-language answer with only [1], [2] as citation markers. No UUIDs, no source_type (uuid):, no excerpt text in the answer body.",
+  "answer": "Comprehensive, well-structured answer with only [1], [2] as citation markers. No UUIDs, no source_type (uuid):, no excerpt text in the answer body.",
   "citations": [
     {{
       "source_type": "lab_note|protocol|report|experiment_summary|sql",
@@ -248,7 +266,24 @@ Citations must reference only sources from the Facts and excerpts above."""
         try:
             # Use summary-specific model when configured (e.g. Bedrock BEDROCK_CHAT_MODEL_ID_SUMMARY).
             model = getattr(llm_client, "chat_model_id_summary", None) or llm_client.default_deployment
-            result = llm_client.complete_json(prompt, schema, model=model, temperature=SUMMARIZER_TEMPERATURE)
+            stream_cb = state.get("stream_callback")
+            if stream_cb and callable(stream_cb) and hasattr(llm_client, "complete_text_stream"):
+                # Stream tokens when callback is set
+                content_parts = []
+                for token in llm_client.complete_text_stream(prompt, model=model, temperature=SUMMARIZER_TEMPERATURE):
+                    content_parts.append(token)
+                    try:
+                        stream_cb("token", {"text": token})
+                    except Exception:
+                        pass
+                content = "".join(content_parts).strip()
+                if content.startswith("```"):
+                    content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
+                    content = re.sub(r"\s*```$", "", content)
+                content = content.strip()
+                result = json.loads(content)
+            else:
+                result = llm_client.complete_json(prompt, schema, model=model, temperature=SUMMARIZER_TEMPERATURE)
         except Exception as e:
             logger.error("Summarizer LLM call failed", error=str(e), run_id=run_id)
             state["summary"] = {"answer": SUMMARIZER_ERROR_MESSAGE, "citations": []}
@@ -354,7 +389,13 @@ Citations must reference only sources from the Facts and excerpts above."""
                            "output_answer_length": len(summary["answer"]), "output_citations_count": len(validated_citations),
                            "output_answer_preview": summary["answer"][:SUMMARIZER_ANSWER_PREVIEW_LEN]})
         state["summary"] = summary
-
+        # Stream thinking for UI: answer generated
+        emit_stream_event(state, "thinking", {
+            "node": "summarizer",
+            "status": "completed",
+            "message": "Answer generated",
+        })
+        
         run_log = state.get("run_process_log") or []
         run_log.append({
             "phase": "summarizer",
@@ -399,19 +440,8 @@ Citations must reference only sources from the Facts and excerpts above."""
         return state
 
 
-# Columns we send to the LLM for narrative (no SQL query, no internal IDs in the facts text)
-SQL_FACT_KEYS = (
-    "project_name",
-    "project_status",
-    "project_description",
-    "experiment_name",
-    "experiment_status",
-    "experiment_description",
-    "name",
-    "status",
-    "description",
-    "title",
-)
+# Columns to HIDE from the LLM (binary/embedding data - not useful for narrative)
+SQL_HIDDEN_KEYS = frozenset({"embedding", "fts", "chunk_index"})
 
 
 def _sql_result_to_summary_facts(
@@ -419,7 +449,7 @@ def _sql_result_to_summary_facts(
     max_rows: int = 50,
     max_cell_len: int = 400,
 ) -> str:
-    """Build summary-ready facts from SQL result: only names, status, description. No SQL query, no UUIDs."""
+    """Build summary-ready facts from SQL result: pass ALL columns (except binary data) so LLM has complete context."""
     if not sql_result or not sql_result.get("data"):
         return "No data from database."
     data = sql_result["data"][:max_rows]
@@ -428,13 +458,13 @@ def _sql_result_to_summary_facts(
         if not isinstance(row, dict):
             continue
         parts = []
-        for k in SQL_FACT_KEYS:
-            if k not in row:
+        for k, v in sorted(row.items()):
+            if not k or k.lower() in SQL_HIDDEN_KEYS:
                 continue
-            v = row[k]
             if v is None or (isinstance(v, str) and not v.strip()):
                 continue
-            parts.append(f"{k.replace('_', ' ').title()}: {_safe_str(v, max_cell_len)}")
+            label = k.replace("_", " ").title()
+            parts.append(f"{label}: {_safe_str(v, max_cell_len)}")
         if parts:
             lines.append(f"  {i}. " + "; ".join(parts))
     if not lines:
