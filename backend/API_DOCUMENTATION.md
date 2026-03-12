@@ -201,8 +201,6 @@ Execute the agent with Server-Sent Events for live, Cursor-style streaming (thin
 
 **Response:** `text/event-stream` with SSE events. See `frontend-integration/AGENT_STREAM_CLIENT.md` for full event schema and a ready-to-use React hook.
 
-**Cloud deployment (streaming):** When deployed with Lambda Web Adapter + Function URL, use the Function URL (e.g. `https://xxxxx.lambda-url.us-east-1.on.aws`) as the base URL for streaming. The deploy workflow creates/updates the Function URL with `InvokeMode: RESPONSE_STREAM`.
-
 **Verify streaming:**
 ```bash
 export AGENT_STREAM_TOKEN="your-supabase-jwt"
