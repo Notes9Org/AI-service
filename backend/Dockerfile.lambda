@@ -1,11 +1,30 @@
-FROM public.ecr.aws/lambda/python:3.11
+# Lambda Web Adapter + response streaming for /agent/stream SSE.
+# Runs FastAPI with uvicorn; adapter streams responses to clients.
+# Use with Lambda Function URL (InvokeMode: RESPONSE_STREAM).
+FROM public.ecr.aws/docker/library/python:3.11-slim
+
+# Lambda Web Adapter for response streaming (must be in /opt/extensions)
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.7.0 /lambda-adapter /opt/extensions/lambda-adapter
+
+# Build deps for psycopg2, pgvector, etc.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /var/task
-
-RUN yum install -y gcc gcc-c++ make libxml2-devel libxslt-devel && yum clean all
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-CMD ["handler.handler"]
+
+# Web Adapter env: response streaming + port
+ENV PORT=8000
+ENV AWS_LWA_INVOKE_MODE=response_stream
+ENV AWS_LWA_READINESS_CHECK_PORT=8000
+
+# Run FastAPI with uvicorn (Web Adapter forwards requests here)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
