@@ -24,7 +24,7 @@ try:
 except ImportError:
     pass
 
-from api import agent_router, aws_transcribe_router, chat_router
+from api import agent_router, aws_transcribe_router, chat_router, biomni_router
 
 load_dotenv()
 
@@ -239,7 +239,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(agent_router)
 app.include_router(chat_router)
 app.include_router(aws_transcribe_router)
-
+app.include_router(biomni_router)
 
 @app.get("/health", tags=["monitoring"])
 async def health_check() -> Dict[str, Any]:
