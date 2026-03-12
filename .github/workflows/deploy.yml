@@ -113,6 +113,21 @@ jobs:
           aws lambda wait function-updated-v2 \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
 
+      - name: Create or update Function URL with response streaming
+        run: |
+          if aws lambda get-function-url-config --function-name ${{ env.LAMBDA_FUNCTION_NAME }} 2>/dev/null; then
+            aws lambda update-function-url-config \
+              --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+              --invoke-mode RESPONSE_STREAM
+          else
+            aws lambda create-function-url-config \
+              --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+              --auth-type NONE \
+              --invoke-mode RESPONSE_STREAM
+          fi
+          echo "Function URL:"
+          aws lambda get-function-url-config --function-name ${{ env.LAMBDA_FUNCTION_NAME }} --query 'FunctionUrl' --output text
+
       - name: Verify deployment
         run: |
           aws lambda get-function \
