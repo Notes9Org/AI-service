@@ -2,6 +2,18 @@
 # This schema is used by LLM to generate SQL queries
 # Updated to match actual database schema
 
+# Internal tables that must NOT be exposed to user-facing SQL generation
+_EXCLUDED_TABLES = (
+    "semantic_chunks",  # RAG internal
+    "agent_runs",
+    "agent_trace_events",
+    "chat_sessions",
+    "chat_messages",
+    "message_votes",
+    "chunk_jobs",
+    "audit_log",
+)
+
 DB_SCHEMA = """
 # Notes9 LIMS Database Schema
 
@@ -386,3 +398,33 @@ JOIN experiments e ON s.experiment_id = e.id
 JOIN projects p ON e.project_id = p.id
 WHERE p.organization_id = '<org_id>'
 """
+
+
+def _build_user_facing_schema() -> str:
+    """Build schema string with internal tables removed (no chunk_jobs, audit_log, agent_*, etc.)."""
+    lines = DB_SCHEMA.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            table_name = stripped.lstrip("#").strip().split()[0]
+            if table_name in _EXCLUDED_TABLES:
+                i += 1
+                while i < len(lines) and not (lines[i].strip().startswith("### ") or lines[i].strip().startswith("## ")):
+                    i += 1
+                continue
+        out.append(line)
+        i += 1
+    result = "\n".join(out)
+    # Remove relationship lines that mention excluded tables
+    result = "\n".join(
+        ln for ln in result.split("\n")
+        if not any(f"-> {t}" in ln or f"{t} (" in ln for t in _EXCLUDED_TABLES)
+    )
+    return result
+
+
+# Schema passed to LLM for user query SQL generation (internal tables removed)
+USER_FACING_SCHEMA = _build_user_facing_schema()

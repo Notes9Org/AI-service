@@ -1,4 +1,4 @@
-"""Graph nodes package."""
+"""Agent graph nodes: normalize, router, sql, rag, summarizer, judge, retry, final, anchor_expander."""
 from agents.graph.nodes.normalize import normalize_node
 from agents.graph.nodes.router import router_node
 from agents.graph.nodes.sql import sql_node
@@ -7,6 +7,7 @@ from agents.graph.nodes.summarizer import summarizer_node
 from agents.graph.nodes.judge import judge_node
 from agents.graph.nodes.retry import retry_node
 from agents.graph.nodes.final import final_node
+from agents.graph.nodes.anchor_expander import anchor_expander_node
 
 __all__ = [
     "normalize_node",
@@ -17,4 +18,5 @@ __all__ = [
     "judge_node",
     "retry_node",
     "final_node",
+    "anchor_expander_node",
 ]

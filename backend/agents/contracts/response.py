@@ -56,9 +56,9 @@ class FinalResponse(BaseModel):
         le=1.0,
         description="Confidence score for the answer"
     )
-    tool_used: Literal["sql", "rag", "hybrid"] = Field(
+    tool_used: Literal["sql", "rag", "hybrid", "none"] = Field(
         ...,
-        description="Tool(s) used to generate answer"
+        description="Tool(s) used to generate answer; 'none' for out-of-scope responses."
     )
     debug: Optional[Dict[str, Any]] = Field(
         None,

@@ -173,9 +173,9 @@ Execute the full agent pipeline to answer a user query.
 ```bash
 curl -X POST "https://your-domain.com/agent/run" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT" \
   -d '{
     "query": "How many experiments were completed last month?",
-    "user_id": "user-123",
     "session_id": "session-456",
     "history": [],
     "options": {
@@ -187,7 +187,29 @@ curl -X POST "https://your-domain.com/agent/run" \
 
 ---
 
-### 2. Test Normalize Node
+### 2. Stream Agent (SSE)
+
+Execute the agent with Server-Sent Events for live, Cursor-style streaming (thinking steps, SQL, RAG chunks, answer tokens).
+
+**Endpoint:** `POST /agent/stream`
+
+**Description:** Same as `/agent/run` but returns `text/event-stream`. Events arrive incrementally: `thinking`, `sql`, `rag_chunks`, `token`, `done`, `error`, `ping`.
+
+**Authentication:** Bearer token required (`Authorization: Bearer <access_token>`).
+
+**Request Body:** Same as `/agent/run` (query, session_id, history, options).
+
+**Response:** `text/event-stream` with SSE events. See `frontend-integration/AGENT_STREAM_CLIENT.md` for full event schema and a ready-to-use React hook.
+
+**Verify streaming:**
+```bash
+export AGENT_STREAM_TOKEN="your-supabase-jwt"
+python -m scripts.verify_agent_stream
+```
+
+---
+
+### 3. Test Normalize Node
 
 Test the normalization node directly without running the full agent pipeline.
 

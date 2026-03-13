@@ -2,6 +2,8 @@
 import time
 import structlog
 from agents.graph.state import AgentState
+from agents.graph.stream_utils import emit_stream_event
+from agents.constants import TOOL_SQL, ENTITY_KEYS_FOR_SQL_FALLBACK
 from agents.services.sql_service import SQLService
 from services.trace_service import TraceService
 from agents.services.thinking_logger import get_thinking_logger
@@ -29,16 +31,33 @@ def get_trace_service() -> TraceService:
     return _trace_service
 
 
+def _has_structured_entities(normalized) -> bool:
+    """True if normalized query has entities that could support a SQL fallback."""
+    if not normalized:
+        return False
+    entities = getattr(normalized, "entities", {}) or {}
+    if not isinstance(entities, dict):
+        return False
+    return any(entities.get(k) for k in ENTITY_KEYS_FOR_SQL_FALLBACK)
+
+
 def sql_node(state: AgentState) -> AgentState:
     """Execute SQL tool: generate and execute SQL queries using LLM."""
+    emit_stream_event(state, "thinking", {"node": "sql", "status": "started", "message": "Calling SQL"})
     start_time = time.time()
     router = state.get("router_decision")
     normalized = state.get("normalized_query")
     request = state["request"]
     run_id = state.get("run_id")
     trace_service = get_trace_service()
+    flags = state.get("flags") or {}
     
-    if not router or "sql" not in router.tools:
+    # Run if router selected SQL, or if RAG-weak fallback (we're retrying with SQL)
+    run_sql = router and TOOL_SQL in router.tools
+    if not run_sql and flags.get("rag_weak") and _has_structured_entities(normalized):
+        run_sql = True
+        logger.info("sql_node: running as RAG-weak fallback", run_id=run_id)
+    if not run_sql:
         return state
     
     logger.info(
@@ -109,6 +128,57 @@ def sql_node(state: AgentState) -> AgentState:
                    sql_preview=sql_preview,
                    sql_full=generated_sql)
         state["sql_result"] = result
+        # Emit SQL and completed thinking for streaming UI (show query + status while loading)
+        if generated_sql:
+            emit_stream_event(state, "thinking", {
+                "node": "sql",
+                "status": "completed",
+                "message": "Query executed",
+                "sql": generated_sql,
+            })
+            emit_stream_event(state, "sql", {"query": generated_sql})
+        # Accumulate this run for summarizer (complete context across retries)
+        sql_runs = state.get("sql_runs") or []
+        sql_runs = list(sql_runs) + [{
+            "query": original_query,
+            "normalized_query": normalized_query_text,
+            "generated_sql": result.get("generated_sql", ""),
+            "data": result.get("data", []),
+            "row_count": result.get("row_count", 0),
+            "error": result.get("error"),
+            "execution_time_ms": result.get("execution_time_ms", 0),
+        }]
+        state["sql_runs"] = sql_runs
+        attempted = state.get("attempted_tools") or []
+        if TOOL_SQL not in attempted:
+            attempted.append(TOOL_SQL)
+            state["attempted_tools"] = attempted
+
+        run_log = state.get("run_process_log") or []
+        run_log.append({
+            "phase": "sql",
+            "attempt": state.get("retry_count", 0),
+            "row_count": result.get("row_count", 0),
+            "has_error": "error" in result,
+            "latency_ms": latency_ms,
+        })
+        state["run_process_log"] = run_log
+        run_cits = state.get("run_citations") or []
+        if result.get("row_count", 0) > 0 and not result.get("error"):
+            run_cits.append({"source_type": "sql", "source_id": run_id or "query", "relevance": 1.0, "chunk_id": None, "excerpt": None})
+        state["run_citations"] = run_cits
+
+        # SQL-empty fallback: only SQL was selected, 0 rows, no error → try RAG next
+        tools = router.tools if hasattr(router, "tools") else []
+        if (
+            tools == [TOOL_SQL]
+            and result.get("row_count", 0) == 0
+            and not result.get("error")
+        ):
+            flags = state.get("flags") or {}
+            flags["sql_empty"] = True
+            state["flags"] = flags
+            logger.info("sql_node: sql_empty flag set, will fallback to RAG", run_id=run_id)
         
         thinking_logger = get_thinking_logger()
         if run_id:
