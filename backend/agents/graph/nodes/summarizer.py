@@ -174,13 +174,10 @@ def summarizer_node(state: AgentState) -> AgentState:
             max_content_len=SUMMARIZER_ENRICHED_CONTENT_LEN,
         )
 
-        # Keep total prompt within model context to avoid LLMError/RetryError
-        prompt_body = f"""You are a knowledgeable lab assistant. Synthesize a comprehensive, insightful answer from the data below.
-
-**Approach (think step by step):**
-1. First, analyze the data: What does the database show? What do the documents say?
-2. Identify key findings, relationships, and context that matter for the user's question.
-3. Then write a clear, well-structured answer that explains the significance of findings—not just raw facts.
+        # Keep total prompt within model context to avoid LLMError/RetryError.
+        # Short system prompt reduces tokens and latency (summarizer is often the slowest node).
+        prompt_body = f"""You are a senior scientific analyst for an electronic lab notebook system. Produce a direct, complete answer from the evidence below. Use database Facts for counts, names, dates; use document excerpts for context. Cite with [1], [2]. If the user asks for specific items (e.g. project name, where something is mentioned), state them explicitly from the evidence.
+        Make sure the given answer is complete and addresses the user's question and frame the answer in a way that is easy to understand and follow.
 
 **User query:** {original_query}
 """
@@ -191,10 +188,10 @@ def summarizer_node(state: AgentState) -> AgentState:
 """
         prompt_body += f"""
 
-**Facts (from database — use for counts, names, status, dates, assignments):**
+**Facts (from database — authoritative for counts, names, status, dates, assignments):**
 {facts_from_db}
 
-**Relevant excerpts (from documents — cite as [1], [2], etc. for details):**
+**Relevant excerpts (from documents — cite as [1], [2], etc.):**
 {relevant_excerpts}"""
         if relevant_followup:
             prompt_body += f"""
@@ -214,18 +211,16 @@ def summarizer_node(state: AgentState) -> AgentState:
         if sql_anchors and not relevant_followup:
             thin_note = " If there is no follow-up (lab notes/protocols), say so in one short sentence."
         rules_and_json = f"""
-**Rules:**
-1. Be specific, informative, and natural. Explain the significance of findings—not just list them.
-2. Use bullet points or numbered lists for multiple items. Use headers for complex responses.
-3. Use Facts (from database) for counts, names, status, dates; do not invent data.
-4. Refer to projects and experiments by name only. Never put UUIDs, source_id, or "source_type (uuid):" in the answer text—readers must not see raw IDs.
-5. In the answer text use only [1], [2], etc. as citation markers. Do not copy the excerpt line into the answer. Put the excerpt only in the citations array.
-6. When you use content from "Relevant excerpts" or "Relevant follow-up", add a citation with the exact source_type and source_id in the citations array. Include every document you use.
-7. No hallucination: only state what is supported by the data above.{thin_note}
+**Answer quality rules:**
+1. Lead with the direct answer. If the user asked for specific items (e.g. project name, experiment name, where something is mentioned), include those explicitly from the Facts or excerpts—cite the source.
+2. Back each major claim with a citation [1], [2], etc. Place citations inline next to the claim they support.
+3. Use Facts (from database) as ground truth for counts, names, status, dates. Refer to projects and experiments by name only. Never put UUIDs or "source_type (uuid):" in the answer.
+4. When the evidence is insufficient, say so—do not hallucinate.
+5. Structure complex answers with bullet points or numbered lists where helpful.{thin_note}
 
 Return JSON with:
 {{
-  "answer": "Comprehensive, well-structured answer with only [1], [2] as citation markers. No UUIDs, no source_type (uuid):, no excerpt text in the answer body.",
+  "answer": "Comprehensive, well-structured answer with inline [1], [2] citation markers. No UUIDs in the answer body.",
   "citations": [
     {{
       "source_type": "lab_note|protocol|report|experiment_summary|sql",
@@ -263,7 +258,7 @@ Citations must reference only sources from the Facts and excerpts above."""
         }
         
         try:
-            # Use summary-specific model when configured (e.g. Bedrock BEDROCK_CHAT_MODEL_ID_SUMMARY).
+            # Use summary-specific model when configured (BEDROCK_CHAT_MODEL_ID_SUMMARY in .env) for faster/cheaper summarizer.
             model = getattr(llm_client, "chat_model_id_summary", None) or llm_client.default_deployment
             stream_cb = state.get("stream_callback")
             if stream_cb and callable(stream_cb) and hasattr(llm_client, "complete_text_stream"):

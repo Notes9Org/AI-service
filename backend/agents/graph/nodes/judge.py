@@ -30,7 +30,9 @@ def judge_node(state: AgentState) -> AgentState:
     sql_result = state.get("sql_result")
     rag_result = state.get("rag_result")  # Can be None if RAG was skipped
     if rag_result is None:
-        rag_result = []  # Default to empty list if None
+        rag_result = []
+    rag_chunks_all = state.get("rag_chunks_all") or []
+    rag_for_evidence = rag_result if rag_result else rag_chunks_all
     normalized = state.get("normalized_query")
     request = state["request"]
     run_id = state.get("run_id")
@@ -109,10 +111,10 @@ def judge_node(state: AgentState) -> AgentState:
             sql_facts = "None"
         
         rag_evidence = ""
-        if rag_result and isinstance(rag_result, list) and len(rag_result) > 0:
+        if rag_for_evidence and isinstance(rag_for_evidence, list) and len(rag_for_evidence) > 0:
             rag_evidence = "\n".join([
                 f"[{i+1}] {chunk.get('content', '')[:200] if isinstance(chunk, dict) else str(chunk)[:200]}"
-                for i, chunk in enumerate(rag_result[:3])
+                for i, chunk in enumerate(rag_for_evidence[:5])
             ])
         else:
             rag_evidence = "None"
@@ -153,12 +155,11 @@ Return JSON with:
 }}
 
 Verdict "pass" if:
-- Facts match SQL data
-- All claims are cited
-- No scope leakage
-- Query is answered
+- Facts match SQL data and the answer includes any specific items the user asked for (e.g. project name, experiment name, "where it is mentioned") when that information is in the Facts or RAG evidence.
+- All major claims are cited.
+- No scope leakage; query is substantially answered.
 
-Verdict "fail" if any major issue exists."""
+Verdict "fail" only for major issues: wrong facts, missing citations for key claims, or clearly missing a requested detail that exists in the evidence."""
 
         # Define schema
         schema = {

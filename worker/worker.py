@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import structlog
 
 from services.db import SupabaseService
-from services.chunker import extract_plain_text, chunk_text
+from services.chunker import extract_plain_text, chunk_text_with_metadata
 from services.embedder import EmbeddingService
 
 load_dotenv()
@@ -35,6 +35,8 @@ class ChunkWorker:
         self.poll_interval = app_config.chunk_worker_poll_interval
         self.chunk_size = app_config.chunk_size
         self.chunk_overlap = app_config.chunk_overlap
+        self.chunking_strategy = app_config.chunking_strategy
+        self.chunk_version = app_config.chunk_version
 
     def process_job(self, job: Dict[str, Any]) -> bool:
         """Process a single chunk job."""
@@ -89,14 +91,17 @@ class ChunkWorker:
                 logger.info("Job skipped - extracted text too short", job_id=job_id)
                 return True
 
-            # Chunk the text
-            text_chunks = chunk_text(
+            # Chunk the text with metadata for semantic_chunks table
+            chunk_infos = chunk_text_with_metadata(
                 plain_text,
                 chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap
+                chunk_overlap=self.chunk_overlap,
+                strategy=self.chunking_strategy,
+                doc_title=payload.get("title"),
+                chunk_version=self.chunk_version,
             )
 
-            if not text_chunks:
+            if not chunk_infos:
                 self.db.update_job_status(
                     job_id,
                     "completed",
@@ -108,10 +113,11 @@ class ChunkWorker:
             logger.info(
                 "Text chunked",
                 job_id=job_id,
-                chunk_count=len(text_chunks)
+                chunk_count=len(chunk_infos)
             )
 
             # Generate embeddings for all chunks
+            text_chunks = [c.get("content", "") for c in chunk_infos]
             embeddings = self.embedder.embed_batch(text_chunks)
 
             # Validate embeddings result
@@ -137,11 +143,15 @@ class ChunkWorker:
             valid_chunks = []
             for i in range(len(text_chunks)):
                 if i < len(embeddings) and embeddings[i] is not None:
-                    valid_chunks.append({
-                        "chunk_text": text_chunks[i],
-                        "embedding": embeddings[i],
-                        "index": i
-                    })
+                    chunk_info = chunk_infos[i] if i < len(chunk_infos) else {}
+                    valid_chunks.append(
+                        {
+                            "chunk_text": text_chunks[i],
+                            "embedding": embeddings[i],
+                            "index": chunk_info.get("index", i),
+                            "metadata": chunk_info.get("metadata", {}),
+                        }
+                    )
 
             if not valid_chunks:
                 self.db.update_job_status(
@@ -166,6 +176,16 @@ class ChunkWorker:
             # Prepare chunks for insertion
             chunks_to_insert = []
             for chunk_data in valid_chunks:
+                # Base metadata from job payload
+                base_metadata = {
+                    "title": payload.get("title", ""),
+                    "source_type": source_type,
+                }
+                # Merge in per-chunk metadata from the chunker (semantic info, version, etc.)
+                chunk_metadata = chunk_data.get("metadata") or {}
+                # Payload/base values should not be lost if keys collide unintentionally
+                merged_metadata = {**chunk_metadata, **base_metadata}
+
                 chunk_record = {
                     "source_type": source_type,
                     "source_id": source_id,
@@ -176,10 +196,7 @@ class ChunkWorker:
                     "project_id": payload.get("project_id"),
                     "experiment_id": payload.get("experiment_id"),
                     "created_by": payload.get("created_by"),
-                    "metadata": {
-                        "title": payload.get("title", ""),
-                        "source_type": source_type
-                    }
+                    "metadata": merged_metadata,
                 }
                 chunks_to_insert.append(chunk_record)
 

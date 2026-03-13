@@ -369,6 +369,15 @@ class AppConfig:
         self.chunk_worker_poll_interval = int(os.getenv("CHUNK_WORKER_POLL_INTERVAL", "5"))
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "1000"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "200"))
+        
+        # RAG / retrieval tuning (backend side)
+        # Whether to use hybrid (vector + FTS) search where available; default off for safety
+        self.rag_use_hybrid = os.getenv("RAG_USE_HYBRID", "false").lower() in ("true", "1", "yes")
+        # Relative weights when hybrid search is enabled
+        self.rag_hybrid_vector_weight = float(os.getenv("RAG_HYBRID_VECTOR_WEIGHT", "0.7"))
+        self.rag_hybrid_text_weight = float(os.getenv("RAG_HYBRID_TEXT_WEIGHT", "0.3"))
+        # Multiplier for raw top-k before metadata/grouping (e.g. 3 => 3 * RAG_TOP_CHUNKS)
+        self.rag_raw_chunks_multiplier = int(os.getenv("RAG_RAW_CHUNKS_MULTIPLIER", "3"))
 
 
 # Global configuration instances (lazy initialization)

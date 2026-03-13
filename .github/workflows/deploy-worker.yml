@@ -46,7 +46,7 @@ jobs:
     environment: worker-production
     env:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME || secrets.LAMBDA_FUNCTION_NAME_WORKER || 'notes9-chunk-worker' }}
     outputs:
       image: ${{ steps.build-image.outputs.image }}
 

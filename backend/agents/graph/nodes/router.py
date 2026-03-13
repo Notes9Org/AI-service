@@ -61,10 +61,10 @@ def router_node(state: AgentState) -> AgentState:
         emit_stream_event(state, "thinking", {
             "node": "router",
             "status": "completed",
-            "message": f"Route to {', '.join(tools)}",
-            "decision": f"Route to {', '.join(tools)}",
-            "rationale": reasoning,
-            "confidence": confidence,
+            "message": f"Route to {', '.join(decision.tools)}",
+            "decision": f"Route to {', '.join(decision.tools)}",
+            "rationale": decision.reasoning,
+            "confidence": decision.confidence,
         })
         # Log error event
         if run_id:
