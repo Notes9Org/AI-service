@@ -1,4 +1,5 @@
 # Deploy Notes9 Agent (FastAPI) to AWS Lambda.
+# Uses environment "backend-production" - configure ECR_REPOSITORY, LAMBDA_FUNCTION_NAME there.
 # AWS Transcribe: Lambda must have IAM permissions (transcribe:StartStreamTranscriptionWebSocket
 # or lambda:InvokeFunction) and env vars: AWS_TRANSCRIBE_SERVICE_URL or AWS_TRANSCRIBE_LAMBDA_FUNCTION_NAME.
 name: Deploy to Lambda
@@ -14,8 +15,6 @@ concurrency:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || 'notes9-catalyst' }}
-  LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME || 'notes9-agent' }}
 
 jobs:
   validate:
@@ -29,17 +28,24 @@ jobs:
             echo "::error::AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required"
             exit 1
           fi
-          if [ -z "${{ secrets.LAMBDA_FUNCTION_NAME }}" ]; then
-            echo "::error::LAMBDA_FUNCTION_NAME secret is required"
+          if [ -z "${{ secrets.ECR_REPOSITORY }}" ]; then
+            echo "::error::ECR_REPOSITORY is required in backend-production environment"
             exit 1
           fi
-          echo "Secrets validated"
+          if [ -z "${{ secrets.LAMBDA_FUNCTION_NAME }}" ]; then
+            echo "::error::LAMBDA_FUNCTION_NAME is required in backend-production environment"
+            exit 1
+          fi
+          echo "Backend secrets validated"
 
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
     needs: validate
-    environment: AWS connection
+    environment: backend-production
+    env:
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
     outputs:
       image: ${{ steps.build-image.outputs.image }}
 
@@ -76,7 +82,10 @@ jobs:
     name: Deploy to Lambda
     runs-on: ubuntu-latest
     needs: build-and-push
-    environment: AWS connection
+    environment: backend-production
+    env:
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
 
     steps:
       - name: Configure AWS credentials

@@ -1,7 +1,7 @@
 """Text chunking utilities."""
 import re
 import json
-from typing import List
+from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 import html2text
 import structlog
@@ -74,19 +74,18 @@ def extract_from_tiptap(doc: dict) -> str:
     return " ".join(text_parts)
 
 
-def chunk_text(
+def _chunk_sentences(
     text: str,
     chunk_size: int = 1000,
-    chunk_overlap: int = 200
+    chunk_overlap: int = 200,
 ) -> List[str]:
-    """
-    Split text into chunks with overlap.
-    Tries to break at sentence boundaries when possible.
-    """
-    if not text or len(text) < chunk_size:
-        return [text] if text else []
+    """Core sentence-based chunking logic (kept for backward compatibility)."""
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
 
-    chunks = []
+    chunks: List[str] = []
 
     # Split into sentences (try to preserve sentence boundaries)
     # Pattern: sentence ending followed by space and capital letter
@@ -100,7 +99,7 @@ def chunk_text(
         if len(sentences) == 1:
             sentences = text.split('\n')
 
-    current_chunk = []
+    current_chunk: List[str] = []
     current_length = 0
 
     for sentence in sentences:
@@ -165,6 +164,66 @@ def chunk_text(
         chunks.append(" ".join(current_chunk))
 
     # Filter out empty chunks
-    chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
+    return [chunk.strip() for chunk in chunks if chunk.strip()]
 
-    return chunks
+
+def chunk_text(
+    text: str,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200
+) -> List[str]:
+    """
+    Backwards-compatible helper used by older callers.
+
+    NOTE: New code that needs metadata or semantic awareness should use
+    `chunk_text_with_metadata` instead.
+    """
+    return _chunk_sentences(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+
+def chunk_text_with_metadata(
+    text: str,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200,
+    *,
+    strategy: str = "semantic",
+    doc_title: Optional[str] = None,
+    chunk_version: int = 2,
+) -> List[Dict[str, Any]]:
+    """
+    Chunk text and emit per-chunk metadata for semantic/section-aware retrieval.
+
+    For now, the underlying segmentation is sentence-based; metadata provides:
+    - index: sequential chunk index within the document
+    - section_index: currently equal to index (placeholder for future grouping)
+    - section_title / heading_level: reserved for future use (None by default)
+    - doc_title: optional, passed through for convenience
+    - chunk_version: version tag for the chunking strategy
+    """
+    if not text:
+        return []
+
+    base_chunks = _chunk_sentences(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    results: List[Dict[str, Any]] = []
+    normalized_strategy = (strategy or "semantic").lower()
+    for idx, content in enumerate(base_chunks):
+        metadata: Dict[str, Any] = {
+            "chunk_version": chunk_version,
+            "strategy": normalized_strategy,
+            "section_index": idx,
+            "section_title": None,
+            "heading_level": None,
+        }
+        if doc_title:
+            metadata["doc_title"] = doc_title
+
+        results.append(
+            {
+                "index": idx,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
+
+    return results

@@ -73,6 +73,11 @@ class AppConfig:
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "1000"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "200"))
 
+        # Chunking strategy and versioning for semantic chunks
+        self.chunking_strategy = os.getenv("CHUNKING_STRATEGY", "semantic").lower()
+        # Version tag written into semantic_chunks.metadata.chunk_version
+        self.chunk_version = int(os.getenv("CHUNK_VERSION", "2"))
+
 
 # Global configuration instances (lazy initialization)
 _supabase_config: Optional[SupabaseConfig] = None
