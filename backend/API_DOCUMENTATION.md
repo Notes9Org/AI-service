@@ -115,9 +115,9 @@ Execute the full agent pipeline to answer a user query.
   "answer": "Based on the database records, 12 experiments were completed last month (January 2024).",
   "citations": [
     {
+      "display_label": "Lab note: PCR Protocol",
       "source_type": "lab_note",
-      "source_id": "123e4567-e89b-12d3-a456-426614174000",
-      "chunk_id": "chunk-123",
+      "source_name": "PCR Protocol",
       "relevance": 0.95,
       "excerpt": "Experiment completed on January 15, 2024..."
     }
@@ -154,13 +154,13 @@ Execute the full agent pipeline to answer a user query.
 | `tool_used` | string | Tool(s) used: `"sql"`, `"rag"`, or `"hybrid"` |
 | `debug` | object | Debug trace (only if `options.debug = true`) |
 
-**Citation Schema:**
+**Citation Schema (response omits source_id and chunk_id; those are stored server-side for reference):**
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `display_label` | string | Human-readable label for UI (e.g. "Lab note: PCR Protocol"). |
 | `source_type` | string | Source type: `"lab_note"`, `"protocol"`, `"report"`, etc. |
-| `source_id` | string | Source ID (UUID) |
-| `chunk_id` | string | Chunk ID if from RAG (optional) |
+| `source_name` | string | Document name (e.g. lab note title). |
 | `relevance` | float | Relevance score (0.0 to 1.0) |
 | `excerpt` | string | Relevant excerpt from source (optional) |
 
@@ -173,9 +173,9 @@ Execute the full agent pipeline to answer a user query.
 ```bash
 curl -X POST "https://your-domain.com/agent/run" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT" \
   -d '{
     "query": "How many experiments were completed last month?",
-    "user_id": "user-123",
     "session_id": "session-456",
     "history": [],
     "options": {
@@ -187,7 +187,29 @@ curl -X POST "https://your-domain.com/agent/run" \
 
 ---
 
-### 2. Test Normalize Node
+### 2. Stream Agent (SSE)
+
+Execute the agent with Server-Sent Events for live, Cursor-style streaming (thinking steps, SQL, RAG chunks, answer tokens).
+
+**Endpoint:** `POST /agent/stream`
+
+**Description:** Same as `/agent/run` but returns `text/event-stream`. Events arrive incrementally: `thinking`, `sql`, `rag_chunks`, `token`, `done`, `error`, `ping`.
+
+**Authentication:** Bearer token required (`Authorization: Bearer <access_token>`).
+
+**Request Body:** Same as `/agent/run` (query, session_id, history, options).
+
+**Response:** `text/event-stream` with SSE events. See `frontend-integration/AGENT_STREAM_CLIENT.md` for full event schema and a ready-to-use React hook.
+
+**Verify streaming:**
+```bash
+export AGENT_STREAM_TOKEN="your-supabase-jwt"
+python -m scripts.verify_agent_stream
+```
+
+---
+
+### 3. Test Normalize Node
 
 Test the normalization node directly without running the full agent pipeline.
 
@@ -474,3 +496,5 @@ For issues or questions:
 - Check CloudWatch logs for detailed error messages
 - Review the interactive API documentation at `/docs`
 - Verify environment variables are correctly set in ECS Task Definition
+
+

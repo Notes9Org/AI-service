@@ -163,3 +163,56 @@ class SupabaseService:
         except Exception as e:
             logger.error("Error updating chunk embedding", error=str(e), chunk_id=chunk_id)
             return False
+
+    def get_source_display_names(
+        self, chunks: List[Dict[str, Any]]
+    ) -> Dict[tuple, str]:
+        """
+        Resolve (source_type, source_id) to human-readable display names.
+        Returns a dict keyed by (source_type, source_id) -> display name (e.g. "PCR Protocol", "Vaccine Project").
+        """
+        out: Dict[tuple, str] = {}
+        if not chunks:
+            return out
+        by_type: Dict[str, List[str]] = {}
+        for c in chunks:
+            if not isinstance(c, dict):
+                continue
+            st = c.get("source_type")
+            sid = c.get("source_id")
+            if not st or not sid:
+                continue
+            by_type.setdefault(st, []).append(sid)
+        for st, ids in by_type.items():
+            ids = list(dict.fromkeys(ids))
+            if not ids:
+                continue
+            try:
+                if st == "lab_note":
+                    r = self.client.table("lab_notes").select("id, title").in_("id", ids).execute()
+                    for row in (r.data or []):
+                        out[(st, str(row["id"]))] = row.get("title") or "Lab note"
+                elif st == "protocol":
+                    r = self.client.table("protocols").select("id, name").in_("id", ids).execute()
+                    for row in (r.data or []):
+                        out[(st, str(row["id"]))] = row.get("name") or "Protocol"
+                elif st == "report":
+                    r = self.client.table("reports").select("id, title").in_("id", ids).execute()
+                    for row in (r.data or []):
+                        out[(st, str(row["id"]))] = row.get("title") or "Report"
+                elif st == "literature_review":
+                    r = self.client.table("literature_reviews").select("id, title").in_("id", ids).execute()
+                    for row in (r.data or []):
+                        out[(st, str(row["id"]))] = row.get("title") or "Literature review"
+                elif st == "experiment_summary" or st == "experiment":
+                    r = self.client.table("experiments").select("id, name").in_("id", ids).execute()
+                    for row in (r.data or []):
+                        out[(st, str(row["id"]))] = row.get("name") or "Experiment"
+                else:
+                    for sid in ids:
+                        out[(st, str(sid))] = st.replace("_", " ").title()
+            except Exception as e:
+                logger.warning("get_source_display_names failed for type %s", st, error=str(e))
+                for sid in ids:
+                    out[(st, str(sid))] = st.replace("_", " ").title()
+        return out

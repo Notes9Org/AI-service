@@ -3,11 +3,27 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
 
+DomainKind = Literal["lab", "general", "unknown"]
+IntentKind = Literal["aggregate", "search", "hybrid", "detail", "other"]
+
+
 class NormalizedQuery(BaseModel):
     """ Normalized query schema for agent execution."""
-    intent: Literal["aggregate", "search", "hybrid"] = Field(
+    domain: DomainKind = Field(
         ...,
-        description="Query Intent: aggregate (SQL), search (RAG), hybrid (both)."
+        description="Domain classification: lab (in-scope), general (out-of-scope), unknown."
+    )
+    in_scope: bool = Field(
+        ...,
+        description="True if the query is about lab management; false if outside domain."
+    )
+    out_of_scope_reason: Optional[str] = Field(
+        default=None,
+        description="When in_scope is false, short reason why (e.g. 'general knowledge', 'weather')."
+    )
+    intent: IntentKind = Field(
+        ...,
+        description="Query intent: aggregate (SQL), search (RAG), hybrid (both), or other (out-of-scope)."
     )
     normalized_query: str = Field(
         ...,
@@ -25,12 +41,21 @@ class NormalizedQuery(BaseModel):
         default=None,
         description="Optional summary of relevant conversation history."
     )
-    
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        """Validate domain value."""
+        allowed = ["lab", "general", "unknown"]
+        if v not in allowed:
+            raise ValueError(f"Invalid domain: {v}. Must be one of: {allowed}")
+        return v
+
     @field_validator("intent")
     @classmethod
     def validate_intent(cls, v: str) -> str:
         """Validate intent value."""
-        allowed_intents = ["aggregate", "search", "hybrid"]
+        allowed_intents = ["aggregate", "search", "hybrid", "detail", "other"]
         if v not in allowed_intents:
             raise ValueError(f"Invalid intent: {v}. Must be one of: {allowed_intents}")
         return v
