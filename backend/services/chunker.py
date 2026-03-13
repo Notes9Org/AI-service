@@ -1,4 +1,9 @@
-"""Text chunking utilities."""
+"""Text chunking utilities for backend-only use.
+
+Note: The worker owns the full semantic chunking and metadata logic. This
+backend module is kept minimal and should not be used for indexing into
+semantic_chunks; it is safe to delete entirely if no backend code imports it.
+"""
 import re
 import json
 from typing import List
@@ -16,7 +21,7 @@ def extract_plain_text(content: str) -> str:
     """
     if not content:
         return ""
-    
+
     # Try to parse as TipTap JSON
     try:
         tiptap_data = json.loads(content)
@@ -24,7 +29,7 @@ def extract_plain_text(content: str) -> str:
             return extract_from_tiptap(tiptap_data)
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
-    
+
     # Try to parse as HTML
     if "<" in content and ">" in content:
         try:
@@ -32,11 +37,11 @@ def extract_plain_text(content: str) -> str:
             # Remove script and style elements
             for script in soup(["script", "style", "meta", "link"]):
                 script.decompose()
-            
+
             # Convert to plain text
             text = soup.get_text(separator=" ", strip=True)
             # Clean up whitespace
-            text = re.sub(r'\s+', ' ', text)
+            text = re.sub(r"\s+", " ", text)
             return text.strip()
         except Exception as e:
             logger.warning("Error parsing HTML", error=str(e))
@@ -45,31 +50,23 @@ def extract_plain_text(content: str) -> str:
             h.ignore_links = True
             h.ignore_images = True
             return h.handle(content).strip()
-    
+
     # Plain text - just clean up
     return content.strip()
 
 
 def extract_from_tiptap(doc: dict) -> str:
     """Extract text from TipTap JSON structure."""
-    text_parts = []
-    
-    def traverse(node: dict):
+    text_parts: List[str] = []
+
+    def traverse(node: dict) -> None:
         if isinstance(node, dict):
-            # Extract text content
             if "text" in node:
                 text_parts.append(node["text"])
-            
-            # Handle marks (bold, italic, etc.) - just extract text
-            if "marks" in node and isinstance(node["marks"], list):
-                pass
-                # Marks don't affect text extraction, just formatting
-            
-            # Traverse children
             if "content" in node and isinstance(node["content"], list):
                 for child in node["content"]:
                     traverse(child)
-    
+
     traverse(doc)
     return " ".join(text_parts)
 
@@ -77,52 +74,52 @@ def extract_from_tiptap(doc: dict) -> str:
 def chunk_text(
     text: str,
     chunk_size: int = 1000,
-    chunk_overlap: int = 200
+    chunk_overlap: int = 200,
 ) -> List[str]:
     """
-    Split text into chunks with overlap.
-    Tries to break at sentence boundaries when possible.
+    Simple sentence-based chunking with overlap.
+
+    This is provided only for any backend features that need ad-hoc chunking;
+    it is not used for writing to semantic_chunks (the worker handles that).
     """
-    if not text or len(text) < chunk_size:
-        return [text] if text else []
-    
-    chunks = []
-    
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
+
+    chunks: List[str] = []
+
     # Split into sentences (try to preserve sentence boundaries)
-    # Pattern: sentence ending followed by space and capital letter
-    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
+    sentence_pattern = r"(?<=[.!?])\s+(?=[A-Z])"
     sentences = re.split(sentence_pattern, text)
-    
-    # If no sentence boundaries found, split by paragraphs
+
+    # If no sentence boundaries found, split by paragraphs/newlines
     if len(sentences) == 1:
-        sentences = text.split('\n\n')
-        # If still no paragraphs, split by newlines
+        sentences = text.split("\n\n")
         if len(sentences) == 1:
-            sentences = text.split('\n')
-    
-    current_chunk = []
+            sentences = text.split("\n")
+
+    current_chunk: List[str] = []
     current_length = 0
-    
+
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
-            
+
         sentence_length = len(sentence)
-        
-        # If single sentence is larger than chunk_size, split it
+
+        # If single sentence is larger than chunk_size, split it by words
         if sentence_length > chunk_size:
-            # Save current chunk if it has content
             if current_chunk:
                 chunks.append(" ".join(current_chunk))
                 current_chunk = []
                 current_length = 0
-            
-            # Split large sentence by words
+
             words = sentence.split()
-            word_chunk = []
+            word_chunk: List[str] = []
             word_length = 0
-            
+
             for word in words:
                 word_len = len(word) + 1  # +1 for space
                 if word_length + word_len > chunk_size:
@@ -133,25 +130,22 @@ def chunk_text(
                 else:
                     word_chunk.append(word)
                     word_length += word_len
-            
+
             if word_chunk:
                 current_chunk = word_chunk
                 current_length = word_length
             continue
-        
+
         # Normal case: add sentence to current chunk
         if current_length + sentence_length + 1 <= chunk_size:
             current_chunk.append(sentence)
-            current_length += sentence_length + 1  # +1 for space
+            current_length += sentence_length + 1
         else:
-            # Save current chunk
             if current_chunk:
                 chunks.append(" ".join(current_chunk))
-            
-            # Start new chunk with overlap
+
             if chunks and chunk_overlap > 0:
-                # Take last part of previous chunk for overlap
-                overlap_text = " ".join(current_chunk[-3:])  # Last 3 sentences
+                overlap_text = " ".join(current_chunk[-3:])
                 if len(overlap_text) > chunk_overlap:
                     overlap_text = overlap_text[-chunk_overlap:]
                 current_chunk = [overlap_text, sentence] if overlap_text else [sentence]
@@ -159,12 +153,8 @@ def chunk_text(
             else:
                 current_chunk = [sentence]
                 current_length = sentence_length
-    
-    # Add remaining chunk
+
     if current_chunk:
         chunks.append(" ".join(current_chunk))
-    
-    # Filter out empty chunks
-    chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
-    
-    return chunks
+
+    return [c.strip() for c in chunks if c.strip()]
