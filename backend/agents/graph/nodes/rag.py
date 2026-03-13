@@ -2,6 +2,7 @@
 import time
 import structlog
 from typing import List, Dict, Any, Set, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from agents.graph.state import AgentState
 from agents.graph.stream_utils import emit_stream_event
 from services.rag import RAGService
@@ -15,6 +16,7 @@ from agents.constants import (
     RAG_TOP_CHUNKS,
     RAG_TOP_CHUNKS_PER_ENTITY,
     RAG_MAX_ENTITIES_FOR_ID_FETCH,
+    RAG_MAX_CHUNKS_PER_SECTION,
 )
 from agents.services.thinking_logger import get_thinking_logger
 
@@ -161,7 +163,7 @@ def rag_node(state: AgentState) -> AgentState:
         embedding_service = get_embedding_service()
         rag_service = get_rag_service()
         
-        # Generate query embedding with error handling
+        # Generate query embedding with error handling (base query)
         try:
             query_embedding = embedding_service.embed_text(normalized.normalized_query)
             
@@ -224,38 +226,32 @@ def rag_node(state: AgentState) -> AgentState:
                                 "output_chunks_found": 0, "output_error": "user_id missing"})
             return state
 
+        app_config = get_app_config()
         match_threshold = _get_rag_threshold()
         project_ids, experiment_ids = _entity_ids_from_sql_state(state)
         id_filtered_chunks: List[Dict[str, Any]] = []
         if experiment_ids or project_ids:
-            for eid in experiment_ids:
+            def _fetch_entity(entity_type: str, entity_id: str) -> List[Dict[str, Any]]:
                 try:
-                    ch = rag_service.search_chunks(
+                    return rag_service.search_chunks(
                         query_embedding=query_embedding,
                         user_id=user_id,
-                        project_id=None,
-                        experiment_id=eid,
+                        project_id=entity_id if entity_type == "project" else None,
+                        experiment_id=entity_id if entity_type == "experiment" else None,
                         match_threshold=match_threshold,
                         match_count=RAG_TOP_CHUNKS_PER_ENTITY,
                         return_below_threshold_for_entity=True,
                     )
-                    id_filtered_chunks.extend(ch)
                 except Exception as e:
-                    logger.warning("RAG ID fetch failed for experiment", experiment_id=eid[:8], error=str(e), run_id=run_id)
-            for pid in project_ids:
-                try:
-                    ch = rag_service.search_chunks(
-                        query_embedding=query_embedding,
-                        user_id=user_id,
-                        project_id=pid,
-                        experiment_id=None,
-                        match_threshold=match_threshold,
-                        match_count=RAG_TOP_CHUNKS_PER_ENTITY,
-                        return_below_threshold_for_entity=True,
-                    )
-                    id_filtered_chunks.extend(ch)
-                except Exception as e:
-                    logger.warning("RAG ID fetch failed for project", project_id=pid[:8], error=str(e), run_id=run_id)
+                    logger.warning(f"RAG ID fetch failed for {entity_type}", entity_id=entity_id[:8], error=str(e), run_id=run_id)
+                    return []
+
+            tasks = [("experiment", eid) for eid in experiment_ids] + [("project", pid) for pid in project_ids]
+            with ThreadPoolExecutor(max_workers=min(len(tasks), 6)) as pool:
+                futures = {pool.submit(_fetch_entity, t, eid): (t, eid) for t, eid in tasks}
+                for fut in as_completed(futures):
+                    id_filtered_chunks.extend(fut.result())
+
             if id_filtered_chunks:
                 logger.info(
                     "RAG UUID-filtered fetch",
@@ -265,26 +261,107 @@ def rag_node(state: AgentState) -> AgentState:
                     id_chunks=len(id_filtered_chunks),
                 )
 
-        chunks_semantic = rag_service.search_chunks(
-            query_embedding=query_embedding,
-            user_id=user_id,
-            organization_id=None,
-            project_id=None,
-            experiment_id=None,
-            match_threshold=match_threshold,
-            match_count=RAG_TOP_CHUNKS,
-        )
+        # Global semantic search: optionally use hybrid search and fetch more raw candidates,
+        # then group by (source_type, source_id, section_index, chunk_version). Support multi-query
+        # retrieval by using expanded_queries from state when present.
+        raw_multiplier = max(getattr(app_config, "rag_raw_chunks_multiplier", 3), 1)
+        global_match_count = max(RAG_TOP_CHUNKS * raw_multiplier, RAG_TOP_CHUNKS)
+        use_hybrid = getattr(app_config, "rag_use_hybrid", False)
+
+        # Build list of (query_text, embedding) pairs: base + expanded queries
+        # Use batch embedding for expanded queries to avoid sequential API round-trips
+        query_pairs: List[Tuple[str, List[float]]] = [(normalized.normalized_query, query_embedding)]
+        expanded = state.get("expanded_queries") or []
+        expanded_clean = [q.strip() for q in expanded if isinstance(q, str) and q.strip()] if isinstance(expanded, list) else []
+        if expanded_clean:
+            try:
+                batch_embeddings = embedding_service.embed_batch(expanded_clean)
+                for q_text, emb in zip(expanded_clean, batch_embeddings):
+                    if emb:
+                        query_pairs.append((q_text, emb))
+            except Exception as e:
+                logger.warning("RAG: batch embed of expanded queries failed", run_id=run_id, error=str(e))
+
+        chunks_semantic: List[Dict[str, Any]] = []
+        for q_text, q_embedding in query_pairs:
+            if use_hybrid:
+                try:
+                    res = rag_service.hybrid_search_chunks(
+                        query_embedding=q_embedding,
+                        query_text=q_text,
+                        user_id=user_id,
+                        organization_id=None,
+                        project_id=None,
+                        experiment_id=None,
+                        match_threshold=match_threshold,
+                        match_count=global_match_count,
+                        vector_weight=getattr(app_config, "rag_hybrid_vector_weight", 0.7),
+                        text_weight=getattr(app_config, "rag_hybrid_text_weight", 0.3),
+                    )
+                    for ch in res:
+                        if "combined_score" in ch:
+                            ch["similarity"] = float(ch.get("combined_score", 0.0))
+                    chunks_semantic.extend(res)
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        "Hybrid RAG search failed for query, falling back to vector-only",
+                        run_id=run_id,
+                        error=str(e),
+                    )
+            # Vector-only path
+            try:
+                res = rag_service.search_chunks(
+                    query_embedding=q_embedding,
+                    user_id=user_id,
+                    organization_id=None,
+                    project_id=None,
+                    experiment_id=None,
+                    match_threshold=match_threshold,
+                    match_count=global_match_count,
+                )
+                chunks_semantic.extend(res)
+            except Exception as e:
+                logger.warning("Vector RAG search failed for query", run_id=run_id, error=str(e))
+
+        # Merge ID-filtered and global chunks, dedup by chunk id
         seen_chunk_ids: Set[str] = set()
         merged: List[Dict[str, Any]] = []
-        for c in id_filtered_chunks + chunks_semantic:
+        for c in id_filtered_chunks + (chunks_semantic or []):
             cid = c.get("id")
             if cid and cid in seen_chunk_ids:
                 continue
             if cid:
                 seen_chunk_ids.add(cid)
             merged.append(c)
+
+        # Sort by similarity (or combined score normalized above)
         merged.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
-        chunks = merged[: max(RAG_TOP_CHUNKS, len(id_filtered_chunks))]
+
+        # Log raw retrieval stats before grouping
+        raw_count = len(merged)
+
+        # Group by (source_type, source_id, section_index, chunk_version) using metadata,
+        # and keep up to RAG_MAX_CHUNKS_PER_SECTION chunks per group.
+        grouped_chunks: List[Dict[str, Any]] = []
+        groups: Dict[Tuple[str, str, Any, int], List[Dict[str, Any]]] = {}
+        for c in merged:
+            meta = c.get("metadata") or {}
+            source_type = str(c.get("source_type") or "unknown")
+            source_id = str(c.get("source_id") or "")
+            section_index = meta.get("section_index")
+            chunk_version = int(meta.get("chunk_version", 1))
+            group_key = (source_type, source_id, section_index, chunk_version)
+            bucket = groups.setdefault(group_key, [])
+            if len(bucket) < RAG_MAX_CHUNKS_PER_SECTION:
+                bucket.append(c)
+
+        for bucket in groups.values():
+            grouped_chunks.extend(bucket)
+
+        # Trim to a reasonable size before experiment-level dedupe
+        grouped_chunks.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+        chunks = grouped_chunks[: max(RAG_TOP_CHUNKS * raw_multiplier, len(id_filtered_chunks))]
 
         # Deduplicate by experiment_id (keep highest similarity)
         seen_experiments = {}
@@ -297,10 +374,27 @@ def rag_node(state: AgentState) -> AgentState:
                     seen_experiments[exp_id] = chunk
             else:
                 deduplicated.append(chunk)
-        
+
         deduplicated.extend(seen_experiments.values())
         deduplicated.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
         final_chunks = deduplicated[:RAG_TOP_CHUNKS]
+
+        # Trace retrieval coverage if tracing is enabled
+        if run_id:
+            try:
+                trace_service.log_event(
+                    run_id=run_id,
+                    node_name="rag",
+                    event_type="retrieval_stats",
+                    payload={
+                        "raw_chunks": raw_count,
+                        "groups": len(groups),
+                        "grouped_chunks": len(grouped_chunks),
+                        "final_chunks": len(final_chunks),
+                    },
+                )
+            except Exception:
+                pass
         
         # RAG-weak gate: empty, or max similarity below threshold, or low coverage (chunks too short)
         max_sim = max([c.get("similarity", 0.0) for c in final_chunks], default=0.0)

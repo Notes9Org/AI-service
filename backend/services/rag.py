@@ -1,6 +1,7 @@
 """RAG (Retrieval Augmented Generation) service for semantic search."""
 import json
 import re
+import threading
 from typing import Optional, List, Dict, Any
 import numpy as np
 import structlog
@@ -18,6 +19,39 @@ try:
 except ImportError:
     PGVECTOR_AVAILABLE = False
     register_vector = None  # type: ignore
+
+# Try connection pooling; fall back to per-call connections
+try:
+    from psycopg2.pool import ThreadedConnectionPool
+    _POOL_AVAILABLE = True
+except ImportError:
+    _POOL_AVAILABLE = False
+    ThreadedConnectionPool = None  # type: ignore
+
+_pool_lock = threading.Lock()
+_connection_pool: Optional["ThreadedConnectionPool"] = None
+
+
+def _get_connection_pool() -> Optional["ThreadedConnectionPool"]:
+    """Lazily create a shared connection pool for pgvector searches."""
+    global _connection_pool
+    if not _POOL_AVAILABLE or not PGVECTOR_AVAILABLE:
+        return None
+    if _connection_pool is not None:
+        return _connection_pool
+    with _pool_lock:
+        if _connection_pool is not None:
+            return _connection_pool
+        try:
+            db_config = get_database_config()
+            args, kwargs = db_config.get_pool_connection_params()
+            kwargs["sslmode"] = kwargs.get("sslmode", "require")
+            _connection_pool = ThreadedConnectionPool(1, 8, *args, **kwargs)
+            logger.info("RAG connection pool created", minconn=1, maxconn=8)
+            return _connection_pool
+        except Exception as e:
+            logger.warning("Failed to create RAG connection pool", error=str(e))
+            return None
 
 
 def parse_embedding(embedding) -> Optional[List[float]]:
@@ -133,10 +167,17 @@ class RAGService:
             params_for_sql.extend([query_vec, match_threshold])
         params_for_sql.extend([query_vec, limit_val])  # ORDER BY, LIMIT
 
+        pool = _get_connection_pool()
         conn = None
+        from_pool = False
         try:
-            db_config = get_database_config()
-            conn = db_config.get_connection(autocommit=True)
+            if pool:
+                conn = pool.getconn()
+                from_pool = True
+            else:
+                db_config = get_database_config()
+                conn = db_config.get_connection(autocommit=True)
+            conn.autocommit = True
             register_vector(conn)
             cur = conn.cursor()
             cur.execute(sql, params_for_sql)
@@ -154,9 +195,12 @@ class RAGService:
             logger.warning("pgvector search failed, will fall back to client-side", error=str(e))
             raise
         finally:
-            if conn and not conn.closed:
+            if conn:
                 try:
-                    conn.close()
+                    if from_pool and pool:
+                        pool.putconn(conn)
+                    elif not conn.closed:
+                        conn.close()
                 except Exception:
                     pass
 
@@ -392,12 +436,25 @@ class RAGService:
             params_for_sql.append(experiment_id)
         if source_types:
             params_for_sql.append(source_types)
-        params_for_sql.extend([vector_weight, text_weight, match_threshold, match_count])
+        # SELECT combined_score needs (vector_weight, text_weight),
+        # WHERE clause needs them again plus match_threshold, then LIMIT
+        params_for_sql.extend([
+            vector_weight, text_weight,
+            vector_weight, text_weight, match_threshold,
+            match_count,
+        ])
 
+        pool = _get_connection_pool()
         conn = None
+        from_pool = False
         try:
-            db_config = get_database_config()
-            conn = db_config.get_connection(autocommit=True)
+            if pool:
+                conn = pool.getconn()
+                from_pool = True
+            else:
+                db_config = get_database_config()
+                conn = db_config.get_connection(autocommit=True)
+            conn.autocommit = True
             register_vector(conn)
             cur = conn.cursor()
             cur.execute(sql, params_for_sql)
@@ -414,9 +471,12 @@ class RAGService:
                 results.append(chunk)
             return results
         finally:
-            if conn and not conn.closed:
+            if conn:
                 try:
-                    conn.close()
+                    if from_pool and pool:
+                        pool.putconn(conn)
+                    elif not conn.closed:
+                        conn.close()
                 except Exception:
                     pass
 

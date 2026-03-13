@@ -16,8 +16,40 @@ from agents.constants import (
     CONFIDENCE_ERROR_OR_MISSING,
 )
 from services.trace_service import TraceService
+from services.db import SupabaseService
 
 logger = structlog.get_logger()
+
+_db_service: SupabaseService = None
+
+
+def _get_db_service() -> SupabaseService:
+    global _db_service
+    if _db_service is None:
+        _db_service = SupabaseService()
+    return _db_service
+
+
+def _resolve_citation_source_names(citations: list) -> dict:
+    """Resolve (source_type, source_id) to human-readable names via DB. Returns dict (source_type, source_id) -> name."""
+    if not citations:
+        return {}
+    chunk_like = []
+    for c in citations:
+        if not isinstance(c, dict):
+            continue
+        st = (c.get("source_type") or "").strip().lower()
+        sid = c.get("source_id")
+        if st == "sql" or not sid or not str(sid).strip():
+            continue
+        chunk_like.append({"source_type": st, "source_id": str(sid).strip()})
+    if not chunk_like:
+        return {}
+    try:
+        return _get_db_service().get_source_display_names(chunk_like)
+    except Exception as e:
+        logger.warning("resolve_citation_source_names failed", error=str(e))
+        return {}
 
 # Singleton trace service
 _trace_service: TraceService = None
@@ -160,24 +192,32 @@ def final_node(state: AgentState) -> AgentState:
             confidence = CONFIDENCE_ERROR_OR_MISSING
         else:
             answer = summary.get("answer", "")
+            raw_citations = summary.get("citations", [])
+            source_names = _resolve_citation_source_names(raw_citations)
             citations = []
-            for cit in summary.get("citations", []):
+            for cit in raw_citations:
                 source_type = cit.get("source_type") or "unknown"
                 if not isinstance(source_type, str):
                     source_type = "unknown"
+                source_id = cit.get("source_id")
+                sid_str = str(source_id).strip() if source_id else ""
                 raw_relevance = float(cit.get("relevance", 0.0))
                 relevance = max(0.0, min(1.0, raw_relevance))
-                display_label = cit.get("display_label") or _citation_display_label(source_type)
+                source_name = cit.get("source_name") or (source_names.get((source_type, sid_str)) if sid_str else None)
+                base_label = _citation_display_label(source_type)
+                display_label = cit.get("display_label") or (f"{base_label}: {source_name}" if source_name else base_label)
                 citations.append(CitationResponse(
                     display_label=display_label,
                     source_type=source_type,
-                    source_name=cit.get("source_name"),
+                    source_name=source_name,
                     relevance=relevance,
                     excerpt=cit.get("excerpt")
                 ))
             if not citations and state.get("run_citations"):
+                run_cits = state.get("run_citations") or []
+                run_names = _resolve_citation_source_names(run_cits)
                 seen = set()
-                for cit in state.get("run_citations") or []:
+                for cit in run_cits:
                     if not isinstance(cit, dict):
                         continue
                     st = (cit.get("source_type") or "unknown")
@@ -188,10 +228,13 @@ def final_node(state: AgentState) -> AgentState:
                     seen.add(key)
                     raw_relevance = float(cit.get("relevance", 0.0))
                     relevance = max(0.0, min(1.0, raw_relevance))
+                    source_name = run_names.get((st, sid)) if sid else None
+                    base_label = _citation_display_label(st)
+                    display_label = f"{base_label}: {source_name}" if source_name else base_label
                     citations.append(CitationResponse(
-                        display_label=_citation_display_label(st),
+                        display_label=display_label,
                         source_type=st if isinstance(st, str) else "unknown",
-                        source_name=None,
+                        source_name=source_name,
                         relevance=relevance,
                         excerpt=cit.get("excerpt")
                     ))
