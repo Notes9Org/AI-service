@@ -2,7 +2,7 @@
 import time
 import structlog
 from agents.graph.state import AgentState
-from agents.contracts.response import FinalResponse, Citation
+from agents.contracts.response import FinalResponse, CitationResponse
 from services.trace_service import TraceService
 from agents.graph.nodes._debug import node_start, node_end
 
@@ -78,10 +78,10 @@ def final_node(state: AgentState) -> AgentState:
             answer = summary.get("answer", "")
             citations = []
             for cit in summary.get("citations", []):
-                citations.append(Citation(
+                citations.append(CitationResponse(
+                    display_label=cit.get("display_label"),
                     source_type=cit.get("source_type", "unknown"),
-                    source_id=cit.get("source_id", ""),
-                    chunk_id=cit.get("chunk_id"),
+                    source_name=cit.get("source_name"),
                     relevance=float(cit.get("relevance", 0.0)),
                     excerpt=cit.get("excerpt")
                 ))

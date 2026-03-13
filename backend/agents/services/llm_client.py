@@ -13,6 +13,17 @@ from services.config import get_bedrock_config
 logger = structlog.get_logger()
 
 
+def _extract_text_from_content(content: List[Dict[str, Any]]) -> str:
+    """Extract and join all text from Bedrock Converse content blocks. Preserves newlines."""
+    if not content:
+        return ""
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and "text" in block:
+            parts.append(block["text"] or "")
+    return "".join(parts)
+
+
 class LLMError(Exception):
     """Custom exception for LLM errors."""
 
@@ -127,9 +138,10 @@ class LLMClient:
             inferenceConfig=inference_config,
         )
         out = response.get("output", {}).get("message", {}).get("content", [])
-        if not out or "text" not in out[0]:
+        text = _extract_text_from_content(out)
+        if not text:
             raise LLMError("Empty or invalid response from Bedrock")
-        return out[0]["text"]
+        return text
 
     def chat(
         self,
@@ -166,9 +178,10 @@ class LLMClient:
             inferenceConfig=inference_config,
         )
         out = response.get("output", {}).get("message", {}).get("content", [])
-        if not out or "text" not in out[0]:
+        text = _extract_text_from_content(out)
+        if not text:
             raise LLMError("Empty or invalid response from Bedrock")
-        return (out[0]["text"] or "").strip()
+        return text.strip()
 
     @retry(
         stop=stop_after_attempt(3),
