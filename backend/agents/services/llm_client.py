@@ -23,6 +23,66 @@ def _extract_text_from_content(content: List[Dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def _sanitize_json_control_chars(raw: str) -> str:
+    """
+    Escape unescaped control characters (\\n, \\r, \\t) inside JSON double-quoted strings.
+    LLMs sometimes return literal newlines inside string values, which is invalid JSON.
+    """
+    result = []
+    i = 0
+    in_string = False
+    escape_next = False
+    while i < len(raw):
+        c = raw[i]
+        if escape_next:
+            result.append(c)
+            escape_next = False
+            i += 1
+            continue
+        if in_string:
+            if c == "\\":
+                result.append(c)
+                escape_next = True
+                i += 1
+                continue
+            if c == '"':
+                in_string = False
+                result.append(c)
+                i += 1
+                continue
+            if c == "\n":
+                result.append("\\n")
+            elif c == "\r":
+                result.append("\\r")
+            elif c == "\t":
+                result.append("\\t")
+            elif ord(c) < 32:
+                result.append(" ")
+            else:
+                result.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def parse_llm_json(content: str) -> Dict[str, Any]:
+    """
+    Parse JSON from LLM response. If parsing fails due to invalid control characters
+    (e.g. literal newlines inside strings), sanitize and retry once.
+    """
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        if "control character" in str(e).lower() or "invalid" in str(e).lower():
+            sanitized = _sanitize_json_control_chars(content)
+            return json.loads(sanitized)
+        raise
+
+
 class LLMError(Exception):
     """Custom exception for LLM errors."""
 
@@ -90,7 +150,7 @@ class LLMClient:
                 )
             content = re.sub(r"\s*```$", "", content).strip()
 
-            result = json.loads(content)
+            result = parse_llm_json(content)
             latency_ms = (time.time() - start_time) * 1000
             logger.info(
                 "LLM JSON completion",

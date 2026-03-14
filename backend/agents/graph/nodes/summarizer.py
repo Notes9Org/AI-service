@@ -7,6 +7,7 @@ from typing import Dict, Any
 from agents.graph.state import AgentState
 from agents.graph.stream_utils import emit_stream_event
 from agents.graph.nodes.normalize import get_llm_client
+from agents.services.llm_client import parse_llm_json
 from agents.constants import (
     TOOL_SQL,
     SUMMARIZER_TEMPERATURE,
@@ -275,7 +276,7 @@ Citations must reference only sources from the Facts and excerpts above."""
                     content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
                     content = re.sub(r"\s*```$", "", content)
                 content = content.strip()
-                result = json.loads(content)
+                result = parse_llm_json(content)
             else:
                 result = llm_client.complete_json(prompt, schema, model=model, temperature=SUMMARIZER_TEMPERATURE)
         except Exception as e:
