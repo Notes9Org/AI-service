@@ -17,7 +17,7 @@ from services.trace_service import TraceService
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/agent", tags=["agent"])
+router = APIRouter(prefix="/notes9", tags=["notes9"])
 
 # Singleton graph (compiled once)
 _agent_graph = None

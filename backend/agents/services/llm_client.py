@@ -242,6 +242,53 @@ class LLMClient:
             raise LLMError("Empty or invalid response from Bedrock")
         return text.strip()
 
+    def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+    ) -> Iterator[str]:
+        """
+        Multi-turn chat streaming: pass list of {"role": "user"|"assistant", "content": "..."}.
+        Yields assistant reply tokens as they arrive.
+        """
+        model = model or self.default_deployment
+
+        converse_messages = []
+        for m in messages:
+            role = (m.get("role") or "user").lower()
+            if role not in ("user", "assistant"):
+                role = "user"
+            content = m.get("content") or ""
+            converse_messages.append({"role": role, "content": [{"text": content}]})
+
+        system_content = [{"text": system}] if system else []
+        inference_config: Dict[str, Any] = {
+            "maxTokens": self.max_completion_tokens,
+        }
+        if temperature != 1.0:
+            inference_config["temperature"] = temperature
+
+        try:
+            response = self.client.converse_stream(
+                modelId=model,
+                messages=converse_messages,
+                system=system_content if system_content else None,
+                inferenceConfig=inference_config,
+            )
+            stream = response.get("stream")
+            if stream:
+                for event in stream:
+                    if "contentBlockDelta" in event:
+                        delta = event["contentBlockDelta"].get("delta", {})
+                        text = delta.get("text", "")
+                        if text:
+                            yield text
+        except Exception as e:
+            logger.error("Bedrock chat stream failed", error=str(e), model=model)
+            raise LLMError(f"Chat stream failed: {str(e)}") from e
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),

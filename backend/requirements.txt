@@ -40,3 +40,10 @@ websockets>=11.0,<13.0  # Required for supabase realtime (compatible version)
 
 # Logging
 structlog==23.2.0
+
+# Biomni biomedical agent
+biomni>=0.0.8
+langchain-aws>=0.2.0
+s3fs>=2024.1.0
+weasyprint>=60.0
+reportlab>=4.0.0

@@ -24,7 +24,7 @@ try:
 except ImportError:
     pass
 
-from api import agent_router, aws_transcribe_router, chat_router
+from api import agent_router, aws_transcribe_router, chat_router, biomni_router
 
 load_dotenv()
 
@@ -241,7 +241,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(agent_router)
 app.include_router(chat_router)
 app.include_router(aws_transcribe_router)
-
+app.include_router(biomni_router)
 
 @app.get("/health", tags=["monitoring"])
 async def health_check() -> Dict[str, Any]:
@@ -283,21 +283,31 @@ async def root() -> Dict[str, Any]:
         "version": "1.0.0",
         "status": "operational",
         "endpoints": {
-            "agent": {
-                "run": "POST /agent/run",
-                "stream": "POST /agent/stream",
-                "normalize_test": "POST /agent/normalize/test",
-                "auth": "Bearer token required",
-            },
             "chat": {
                 "post": "POST /chat",
-                "description": "Send messages and optional system prompt; receive Claude/LLM assistant reply. Bearer token required.",
+                "stream": "POST /chat/stream",
+                "description": "Direct Claude/LLM chat. Send messages and optional system prompt; receive assistant reply. /stream returns SSE. Bearer token required.",
+            },
+            "notes9": {
+                "run": "POST /notes9/run",
+                "stream": "POST /notes9/stream",
+                "description": "Full agent pipeline (normalize → router → SQL/RAG → summarizer). Bearer token required.",
             },
             "AWS_transcribe": {
                 "createSession": "POST /AWS_transcribe",
                 "description": "Create a Transcribe session for streaming dictation. Returns stream_url for WebSocket. Bearer token required.",
             },
-            "literature": {"search": "/literature/search"},
+            "biomni": {
+                "run": "POST /biomni/run",
+                "stream": "POST /biomni/stream",
+                "ws": "WS /biomni/ws",
+                "health": "GET /biomni/health",
+                "sessions": "GET /biomni/sessions",
+                "session_pdf": "GET /biomni/sessions/{id}/pdf",
+                "mcp_servers": "GET /biomni/mcp/servers",
+                "mcp_health": "GET /biomni/mcp/health",
+                "auth": "Bearer token required for /run, /stream, /sessions, /mcp; token in query or first message for /ws",
+            },
             "monitoring": {"health": "GET /health", "readiness": "GET /health/ready"},
             "documentation": {"swagger": "/docs", "redoc": "/redoc"},
         },
