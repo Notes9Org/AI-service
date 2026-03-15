@@ -10,7 +10,7 @@ class RouterDecision(BaseModel):
     """Router decision schema for agent execution and tool selection."""
     tools: List[Literal["sql", "rag"]] = Field(
         default_factory=list,
-        description="Selected tools: ['sql'], ['rag'], ['sql', 'rag'], or [] when route is out_of_scope."
+        description="Selected tools: ['sql'], ['rag'], ['sql', 'rag'], or [] when route is out_of_scope or when in_scope but both tools already tried (synthesize from context only)."
     )
     route: RouteKind = Field(
         default="in_scope",
@@ -42,11 +42,8 @@ class RouterDecision(BaseModel):
 
     @model_validator(mode="after")
     def validate_route_and_tools(self) -> "RouterDecision":
-        """When route is out_of_scope, tools must be empty; when in_scope, tools must be non-empty."""
+        """When route is out_of_scope, tools must be empty. in_scope allows empty tools (retry path: synthesize from existing context only)."""
         if self.route == "out_of_scope":
             if self.tools:
                 raise ValueError("When route is out_of_scope, tools must be empty")
-        else:
-            if not self.tools:
-                raise ValueError("When route is in_scope, tools must be non-empty")
         return self
