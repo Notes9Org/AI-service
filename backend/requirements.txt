@@ -47,3 +47,4 @@ biomni>=0.0.8
 langchain-aws==0.2.35
 s3fs==2024.12.0
 reportlab>=4.0.0
+pandas>-2.0.0
