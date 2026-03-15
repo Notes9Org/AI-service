@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Verify that /agent/stream emits SSE events incrementally (not buffered until the end).
+Verify that /notes9/stream emits SSE events incrementally (not buffered until the end).
 
 Usage:
   export AGENT_STREAM_TOKEN="your-supabase-jwt"
@@ -34,7 +34,7 @@ def main():
         )
         sys.exit(1)
 
-    url = f"{BASE_URL.rstrip('/')}/agent/stream"
+    url = f"{BASE_URL.rstrip('/')}/notes9/stream"
     payload = {
         "query": "How many experiments were completed last month?",
         "session_id": "verify-stream-test",

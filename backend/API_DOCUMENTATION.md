@@ -22,12 +22,13 @@ Host: your-domain.com
   "version": "1.0.0",
   "status": "operational",
   "endpoints": {
-    "agent": {
-      "run": "/agent/run",
-      "normalize_test": "/agent/normalize/test"
+    "notes9": {
+      "run": "/notes9/run",
+      "stream": "/notes9/stream"
     },
-    "literature": {
-      "search": "/literature/search"
+    "chat": {
+      "post": "/chat",
+      "stream": "/chat/stream"
     },
     "monitoring": {
       "health": "/health",
@@ -46,13 +47,13 @@ Host: your-domain.com
 
 ---
 
-## Agent Endpoints
+## Notes9 Agent Endpoints
 
 ### 1. Run Agent
 
 Execute the full agent pipeline to answer a user query.
 
-**Endpoint:** `POST /agent/run`
+**Endpoint:** `POST /notes9/run`
 
 **Description:** Executes the complete agent graph: normalize → router → tools (SQL/RAG) → summarizer → judge → final response. The agent intelligently routes queries to SQL (for structured data queries) or RAG (for semantic search), or both.
 
@@ -171,7 +172,7 @@ Execute the full agent pipeline to answer a user query.
 
 **Example cURL:**
 ```bash
-curl -X POST "https://your-domain.com/agent/run" \
+curl -X POST "https://your-domain.com/notes9/run" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT" \
   -d '{
@@ -191,13 +192,13 @@ curl -X POST "https://your-domain.com/agent/run" \
 
 Execute the agent with Server-Sent Events for live, Cursor-style streaming (thinking steps, SQL, RAG chunks, answer tokens).
 
-**Endpoint:** `POST /agent/stream`
+**Endpoint:** `POST /notes9/stream`
 
-**Description:** Same as `/agent/run` but returns `text/event-stream`. Events arrive incrementally: `thinking`, `sql`, `rag_chunks`, `token`, `done`, `error`, `ping`.
+**Description:** Same as `/notes9/run` but returns `text/event-stream`. Events arrive incrementally: `thinking`, `sql`, `rag_chunks`, `token`, `done`, `error`, `ping`.
 
 **Authentication:** Bearer token required (`Authorization: Bearer <access_token>`).
 
-**Request Body:** Same as `/agent/run` (query, session_id, history, options).
+**Request Body:** Same as `/notes9/run` (query, session_id, history, options).
 
 **Response:** `text/event-stream` with SSE events. See `frontend-integration/AGENT_STREAM_CLIENT.md` for full event schema and a ready-to-use React hook.
 
@@ -209,204 +210,113 @@ python -m scripts.verify_agent_stream
 
 ---
 
-### 3. Test Normalize Node
+## Chat Endpoints
 
-Test the normalization node directly without running the full agent pipeline.
+Direct Claude/LLM chat (no agent pipeline). Uses same input pattern as notes9: content, session_id, history.
 
-**Endpoint:** `POST /agent/normalize/test`
+### 1. Chat (non-streaming)
 
-**Description:** Tests the query normalization step independently. Useful for debugging query understanding and entity extraction.
+**Endpoint:** `POST /chat`
+
+**Description:** Send user message and optional history; receive full assistant reply.
+
+**Request Body:** `{ "content": "...", "session_id": "...", "history": [{ "role": "user"|"assistant", "content": "..." }] }`
+
+**Response:** `{ "content": "...", "role": "assistant" }`
+
+**Authentication:** Bearer token required.
+
+### 2. Chat Stream (SSE)
+
+**Endpoint:** `POST /chat/stream`
+
+**Description:** Same as `/chat` but returns `text/event-stream`. Events: `token` (incremental text), `done` (full content, role), `error`.
+
+**Request Body:** Same as `/chat`.
+
+**Response:** SSE stream. Events: `token` → `{"text": "..."}`, `done` → `{"content": "...", "role": "assistant"}`, `error` → `{"error": "..."}`.
+
+**Authentication:** Bearer token required.
+
+---
+
+## Biomni Endpoints
+
+Biomedical AI agent powered by [Stanford Biomni](https://github.com/snap-stanford/Biomni). All mutation endpoints require Bearer token (Supabase Auth).
+
+**Aligned with agent/run:** Biomni uses the same input pattern: `query`, `session_id`, `history`, `options`. `user_id` is always from the Bearer token (never from request body).
+
+### 1. Run Biomni Task
+
+**Endpoint:** `POST /biomni/run`
+
+**Description:** Execute a biomedical research task. Supports clarification questions, PDF generation, and session persistence.
 
 **Request Body:**
 ```json
 {
-  "query": "Find notes about PCR experiments from last week",
-  "user_id": "test-user",
-  "session_id": "test-session",
-  "history": [
-    {
-      "role": "user",
-      "content": "What experiments are running?"
-    }
-  ]
-}
-```
-
-**Request Schema:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `query` | string | Yes | Query to normalize |
-| `user_id` | string | No | User ID (default: `"test-user"`) |
-| `session_id` | string | No | Session ID (default: `"test-session"`) |
-| `history` | array | No | Conversation history (optional) |
-
-**Response (Success):**
-```json
-{
-  "success": true,
-  "input": {
-    "query": "Find notes about PCR experiments from last week"
-  },
-  "output": {
-    "intent": "search",
-    "normalized_query": "find lab notes about PCR experiments from last week",
-    "entities": {
-      "keywords": ["PCR", "experiments"],
-      "time_range": "last week",
-      "source_type": "lab_note"
-    },
-    "context": {
-      "requires_semantic_search": true
-    },
-    "history_summary": "User previously asked about running experiments"
+  "query": "Predict ADMET properties for aspirin",
+  "session_id": "session-456",
+  "max_retries": 3,
+  "history": [],
+  "options": {
+    "skip_clarify": false,
+    "max_clarify_rounds": 2,
+    "generate_pdf": false
   }
 }
 ```
 
-**Response (Error):**
-```json
-{
-  "success": false,
-  "error": "Failed to normalize query: ..."
-}
-```
+Use `query` (same as agent/run) or `prompt` (backwards compat). Either is required. `user_id` comes from Bearer token only.
 
-**Response Schema:**
+**Response:** `result`, `success`, `error`, `steps`, `artifact_url`, `pdf_url`, `clarify_question`, `clarify_options`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | boolean | Whether normalization succeeded |
-| `input` | object | Original input query |
-| `output` | object | Normalized output (only if `success = true`) |
-| `error` | string | Error message (only if `success = false`) |
-
-**Output Schema:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `intent` | string | Query intent: `"aggregate"`, `"search"`, or `"hybrid"` |
-| `normalized_query` | string | Cleaned and normalized query text |
-| `entities` | object | Extracted entities (dates, IDs, keywords, etc.) |
-| `context` | object | Conversation context and metadata |
-| `history_summary` | string | Summary of relevant conversation history (optional) |
-
-**Status Codes:**
-- `200 OK` - Request processed (check `success` field)
-
-**Example cURL:**
-```bash
-curl -X POST "https://your-domain.com/agent/normalize/test" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Find notes about PCR experiments from last week",
-    "user_id": "test-user",
-    "session_id": "test-session"
-  }'
-```
+**Status Codes:** `200 OK`, `503` (Biomni not installed)
 
 ---
 
-## Literature Search Endpoints
+### 2. Stream Biomni Task (SSE)
 
-### 1. Search Literature
+**Endpoint:** `POST /biomni/stream`
 
-Search for scientific literature using Brave Search API.
+**Description:** Same as `/biomni/run` but returns `text/event-stream`. Events: `started`, `step`, `clarify`, `result`, `error`, `ping`, `done`.
 
-**Endpoint:** `GET /literature/search`
+**Request Body:** Same as `/biomni/run`.
 
-**Description:** Searches for scientific papers and literature related to a topic. Returns structured results with metadata including title, authors, year, journal, abstract, DOI, PMID, and PDF URLs.
+**Response:** SSE stream. See `frontend-integration/BIOMNI_STREAM_CLIENT.md` for event schema and React hooks.
 
-**Query Parameters:**
+---
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `q` | string | Yes | Search query for literature topic (min length: 1) |
-| `limit` | integer | No | Maximum number of results (1-50, default: 20) |
+### 3. Biomni WebSocket
 
-**Request:**
-```http
-GET /literature/search?q=CRISPR gene editing&limit=10 HTTP/1.1
-Host: your-domain.com
-```
+**Endpoint:** `WS /biomni/ws`
 
-**Response:**
-```json
-{
-  "papers": [
-    {
-      "id": "paper-1",
-      "title": "CRISPR-Cas9: A Revolutionary Gene Editing Tool",
-      "authors": ["Jennifer Doudna", "Emmanuelle Charpentier"],
-      "year": 2020,
-      "journal": "Nature",
-      "abstract": "CRISPR-Cas9 has revolutionized the field of gene editing...",
-      "isOpenAccess": true,
-      "doi": "10.1038/s41586-020-2442-0",
-      "pmid": "32709965",
-      "pdfUrl": "https://example.com/paper.pdf",
-      "url": "https://www.nature.com/articles/s41586-020-2442-0",
-      "source": "brave"
-    },
-    {
-      "id": "paper-2",
-      "title": "Applications of CRISPR in Biomedical Research",
-      "authors": ["Feng Zhang"],
-      "year": 2021,
-      "journal": "Science",
-      "abstract": "This review discusses the applications of CRISPR...",
-      "isOpenAccess": false,
-      "doi": "10.1126/science.abc1234",
-      "pmid": null,
-      "pdfUrl": null,
-      "url": "https://www.science.org/doi/10.1126/science.abc1234",
-      "source": "brave"
-    }
-  ],
-  "totalCount": 10,
-  "source": "brave"
-}
-```
+**Description:** Bidirectional streaming. Connect with `?token=JWT` or send `{"type": "auth", "token": "..."}` first. Send `{"type": "run", "query": "...", "session_id": "..."}` to execute (or use `prompt`). `user_id` from token. Supports clarifying questions: server sends `{"type": "clarify", "question": "...", "options": [...]}`, client responds with `{"type": "clarify_response", "answer": "..."}`.
 
-**Response Schema:**
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `papers` | array | List of paper objects |
-| `totalCount` | integer | Number of results returned |
-| `source` | string | Search source identifier (always `"brave"`) |
+### 4. Biomni Health
 
-**Paper Object Schema:**
+**Endpoint:** `GET /biomni/health`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Unique paper identifier |
-| `title` | string | Paper title |
-| `authors` | array | List of author names |
-| `year` | integer | Publication year |
-| `journal` | string | Journal name |
-| `abstract` | string | Paper abstract |
-| `isOpenAccess` | boolean | Whether paper is open access |
-| `doi` | string | Digital Object Identifier (optional) |
-| `pmid` | string | PubMed ID (optional) |
-| `pdfUrl` | string | Direct PDF URL (optional) |
-| `url` | string | Paper URL |
-| `source` | string | Source identifier |
+**Description:** Lightweight check that the agent can be initialized. No auth required.
 
-**Status Codes:**
-- `200 OK` - Search completed successfully
-- `400 Bad Request` - Invalid query (empty or too short)
-- `500 Internal Server Error` - Search failed
+---
 
-**Example cURL:**
-```bash
-curl "https://your-domain.com/literature/search?q=CRISPR%20gene%20editing&limit=10"
-```
+### 5. Sessions
 
-**Example with URL encoding:**
-```bash
-curl "https://your-domain.com/literature/search?q=machine%20learning%20in%20biology&limit=20"
-```
+**Endpoints:**
+- `GET /biomni/sessions` — List user's sessions
+- `GET /biomni/sessions/{session_id}` — Get session with all runs
+- `GET /biomni/sessions/{session_id}/pdf` — Download session PDF report
+
+---
+
+### 6. MCP
+
+**Endpoints:**
+- `GET /biomni/mcp/servers` — List registered MCP servers and tools
+- `GET /biomni/mcp/health` — Test MCP connections
 
 ---
 
@@ -485,8 +395,7 @@ Currently, there are no rate limits implemented. In production, consider impleme
 2. **Use conversation history** for context-aware responses
 3. **Set `debug: true`** during development to see detailed execution traces
 4. **Handle errors gracefully** - check status codes and error messages
-5. **Use appropriate `limit` values** for literature search (1-50)
-6. **Monitor `/health/ready`** before sending production traffic
+5. **Monitor `/health/ready`** before sending production traffic
 
 ---
 

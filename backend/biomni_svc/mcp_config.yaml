@@ -1,0 +1,18 @@
+# Example MCP config for Biomni.
+# Set BIOMNI_MCP_CONFIG_PATH to this file path to enable.
+# See https://github.com/snap-stanford/Biomni/blob/main/docs/mcp_integration.md
+
+mcp_servers:
+  # PubMed MCP (if available in Biomni)
+  # pubmed:
+  #   command: ["python", "-m", "biomni.tool.mcp_tools.pubmed_mcp"]
+  #   enabled: true
+  #   env:
+  #     NCBI_EMAIL: "${NCBI_EMAIL}"
+
+  # Add your MCP servers here. Example:
+  # github:
+  #   command: ["docker", "run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
+  #   enabled: true
+  #   env:
+  #     GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"

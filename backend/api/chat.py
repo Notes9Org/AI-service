@@ -2,12 +2,17 @@
 Claude (AWS Bedrock) chat endpoint.
 
 POST /chat: send user message content and optional history; receive assistant reply.
+POST /chat/stream: same as /chat but returns SSE with token events.
 Requires Bearer token (Supabase Auth).
-Follows /agent/run input schema pattern - content, session_id, history for memory management.
+Follows /notes9/run input schema pattern - content, session_id, history for memory management.
 """
+import asyncio
+import json
+from queue import Empty, Queue
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 import structlog
@@ -110,3 +115,88 @@ async def chat(
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+def _format_sse(event_type: str, data: dict) -> str:
+    """Format a Server-Sent Event."""
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser):
+    """Async generator that streams chat tokens as SSE events."""
+    user_id = current_user.user_id
+    session_id = request.session_id
+    logger.info("chat_stream_request", user_id=user_id, session_id=session_id, content_len=len(request.content), history_len=len(request.history))
+
+    messages = [{"role": m.role, "content": m.content} for m in request.history] + [{"role": "user", "content": request.content}]
+    model_id = get_bedrock_config().get_chat_model_id()
+    queue: Queue = Queue()
+
+    def run_stream():
+        try:
+            client = LLMClient()
+            content_parts = []
+            for token in client.chat_stream(
+                messages=messages,
+                system=DEFAULT_SYSTEM_PROMPT,
+                model=model_id,
+                temperature=0.7,
+            ):
+                content_parts.append(token)
+                queue.put(("token", {"text": token}))
+            queue.put(("done", {"content": "".join(content_parts), "role": "assistant"}))
+        except Exception as e:
+            queue.put(("error", {"error": str(e)}))
+
+    task = asyncio.to_thread(run_stream)
+
+    async def collect():
+        await task
+
+    stream_task = asyncio.create_task(collect())
+
+    try:
+        while True:
+            try:
+                event_type, data = queue.get(timeout=0.5)
+            except Empty:
+                if stream_task.done():
+                    # Drain any remaining items (producer may have just finished)
+                    while True:
+                        try:
+                            event_type, data = queue.get_nowait()
+                            yield _format_sse(event_type, data)
+                            if event_type in ("done", "error"):
+                                break
+                        except Empty:
+                            break
+                break
+
+            yield _format_sse(event_type, data)
+            if event_type in ("done", "error"):
+                break
+
+        await stream_task
+    except Exception as e:
+        logger.error("chat_stream failed", error=str(e))
+        yield _format_sse("error", {"error": str(e)})
+
+
+@router.post("/stream", summary="Chat with Claude / LLM (SSE streaming)")
+async def chat_stream(
+    request: ChatRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    **Chat stream endpoint.** Same as POST /chat but returns text/event-stream.
+    Events: token (incremental text), done (full content), error.
+    """
+    return StreamingResponse(
+        _stream_chat_generator(request, current_user=current_user),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
