@@ -1,5 +1,5 @@
 # Core dependencies
-fastapi>=0.104.1
+fastapi==0.115.6
 uvicorn[standard]==0.24.0
 pydantic>=2.5.2,<3.0.0
 pydantic-settings>=2.1.0,<3.0.0
@@ -11,18 +11,18 @@ postgrest==0.13.0
 # JWT verification (Supabase Auth Bearer token)
 PyJWT>=2.8.0
 
-# AWS Bedrock
-boto3>=1.34.0
+# AWS Bedrock (pinned for s3fs/aiobotocore compatibility)
+boto3==1.41.5
 
 # Text processing
 beautifulsoup4==4.12.2
 lxml>=4.9.3
 html2text==2024.2.26
 
-# LangGraph (agentic framework; 0.0.20 has broken checkpoint import)
-langgraph>=0.2.0,<0.3.0
-langchain-core>=0.2.0
-langchain>=0.2.0
+# LangGraph (agentic framework). Use LANGGRAPH_STRICT_MSGPACK=true for CVE mitigation.
+langgraph==0.2.35
+langchain-core==0.3.83
+langchain==0.3.28
 
 # Database
 psycopg2-binary==2.9.9
@@ -33,16 +33,17 @@ mangum>=0.17.0
 
 # Utilities
 python-dotenv==1.0.0
+urllib3>=2.0.0,<3.0.0
 httpx>=0.24.0,<0.25.0
 tenacity==8.2.3
-numpy>=1.24.0,< 2
-websockets>=11.0,<13.0  # Required for supabase realtime (compatible version)
+numpy>=1.24.0,<2
+websockets>=11.0,<13.0
 
 # Logging
 structlog==23.2.0
 
 # Biomni biomedical agent
 biomni>=0.0.8
-langchain-aws>=0.2.0
-s3fs>=2024.1.0
+langchain-aws==0.2.35
+s3fs==2024.12.0
 reportlab>=4.0.0
