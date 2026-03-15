@@ -21,7 +21,7 @@ html2text==2024.2.26
 
 # LangGraph (agentic framework). Use LANGGRAPH_STRICT_MSGPACK=true for CVE mitigation.
 langgraph==0.2.35
-langchain-core==0.3.83
+langchain-core==1.2.11
 langchain==0.3.28
 
 # Database
