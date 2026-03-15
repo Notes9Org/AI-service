@@ -48,10 +48,6 @@ langchain-aws==0.2.35
 langchain-openai>=0.2.0
 s3fs==2024.12.0
 reportlab>=4.0.0
-pandas>-2.0.0
+pandas>=2.0.0
 mcp>=1.0.0
-<<<<<<< HEAD
 nest-asyncio>=1.5.0
-=======
-nest-asyncio>=1.5.0
->>>>>>> 9465bf7 (fix: fixed the bug for the biomni dependency)
