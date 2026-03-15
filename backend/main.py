@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from api import agent_router, aws_transcribe_router, chat_router, biomni_router
 from dotenv import load_dotenv
 import structlog
 from mangum import Mangum
@@ -24,9 +25,10 @@ try:
 except ImportError:
     pass
 
-from api import agent_router, aws_transcribe_router, chat_router, biomni_router
-
 load_dotenv()
+
+# LangGraph: enable strict msgpack deserialization (CVE mitigation for checkpoint stores)
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 def console_renderer(logger, name, event_dict):
     """Console renderer for agent node events - shows every node transition (start + completed)."""
