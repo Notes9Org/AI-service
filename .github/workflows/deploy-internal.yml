@@ -1,16 +1,20 @@
-# Deploy Notes9 Agent (FastAPI) to AWS Lambda.
-# Uses environment "backend-production" - configure ECR_REPOSITORY, LAMBDA_FUNCTION_NAME there.
+# Deploy Internal Agent (Notes9, chat) to AWS Lambda.
+# Uses environment "internal-production" - configure ECR_REPOSITORY, LAMBDA_FUNCTION_NAME there.
+# No VPC required - user creates new Lambda for this.
 # AWS Transcribe: Lambda must have IAM permissions (transcribe:StartStreamTranscriptionWebSocket
 # or lambda:InvokeFunction) and env vars: AWS_TRANSCRIBE_SERVICE_URL or AWS_TRANSCRIBE_LAMBDA_FUNCTION_NAME.
-name: Deploy to Lambda
+name: Deploy Internal
 
 on:
   push:
     branches:
       - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-internal.yml'
 
 concurrency:
-  group: deploy-lambda-${{ github.ref }}
+  group: deploy-internal-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -20,7 +24,7 @@ jobs:
   validate:
     name: Validate secrets
     runs-on: ubuntu-latest
-    environment: backend-production
+    environment: internal-production
     steps:
       - name: Check required secrets
         run: |
@@ -29,20 +33,20 @@ jobs:
             exit 1
           fi
           if [ -z "${{ secrets.ECR_REPOSITORY }}" ]; then
-            echo "::error::ECR_REPOSITORY is required in backend-production environment"
+            echo "::error::ECR_REPOSITORY is required in internal-production environment"
             exit 1
           fi
           if [ -z "${{ secrets.LAMBDA_FUNCTION_NAME }}" ]; then
-            echo "::error::LAMBDA_FUNCTION_NAME is required in backend-production environment"
+            echo "::error::LAMBDA_FUNCTION_NAME is required in internal-production environment"
             exit 1
           fi
-          echo "Backend secrets validated"
+          echo "Internal secrets validated"
 
   build-and-push:
-    name: Build and Push to ECR
+    name: Build and Push Internal to ECR
     runs-on: ubuntu-latest
     needs: validate
-    environment: backend-production
+    environment: internal-production
     env:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
@@ -68,9 +72,10 @@ jobs:
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: internal-${{ github.sha }}
         run: |
-          docker build -f ./backend/Dockerfile.lambda \
+          docker build --provenance=false --platform=linux/amd64 \
+            -f ./backend/Dockerfile.lambda \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             ./backend
@@ -79,10 +84,10 @@ jobs:
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   deploy:
-    name: Deploy to Lambda
+    name: Deploy Internal to Lambda
     runs-on: ubuntu-latest
     needs: build-and-push
-    environment: backend-production
+    environment: internal-production
     env:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
@@ -97,9 +102,9 @@ jobs:
 
       - name: Update Lambda function code
         env:
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: internal-${{ github.sha }}
         run: |
-          REPO_URI=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryUri' --output text)
+          REPO_URI=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryUri' --output text --region ${{ env.AWS_REGION }})
           IMAGE_URI="${REPO_URI}:${IMAGE_TAG}"
           aws lambda update-function-code \
             --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" \

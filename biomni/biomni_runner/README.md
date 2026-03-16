@@ -2,7 +2,7 @@
 
 > **DEPRECATED:** This module has been superseded by `biomni_svc`. Use `POST /biomni/run`, `POST /biomni/stream`, or `WS /biomni/ws` instead. The `/biomni/query` endpoint has been removed. This module is retained for CLI usage (`python -m biomni_runner.run`) only.
 
-Standalone BioMni biomedical AI agent integration using AWS Bedrock and the local data lake at `backend/data/biomni/biomni_data/`.
+Standalone BioMni biomedical AI agent integration using AWS Bedrock and the local data lake at `biomni/data/biomni/biomni_data/`.
 
 ## API Endpoint (Swagger UI)
 

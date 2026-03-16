@@ -1,4 +1,4 @@
-"""CLI entry point for BioMni agent. Run with: python -m biomni_runner.run (from backend/)"""
+"""CLI entry point for BioMni agent. Run with: python -m biomni_runner.run (from biomni/)"""
 import matplotlib
 matplotlib.use("Agg")
 
@@ -11,7 +11,7 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-# Load .env from backend
+# Load .env from biomni root
 try:
     from dotenv import load_dotenv
     load_dotenv(_backend_root / ".env")
@@ -38,7 +38,7 @@ def main() -> int:
         "--data-path",
         type=str,
         default=None,
-        help="Path to parent of biomni_data/ (BioMni uses path/biomni_data/). Default: backend/data/biomni",
+        help="Path to parent of biomni_data/ (BioMni uses path/biomni_data/). Default: biomni/data/biomni",
     )
     parser.add_argument(
         "--interactive",

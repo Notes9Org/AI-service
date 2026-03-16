@@ -27,7 +27,7 @@ class BioMniAgent:
         """Initialize BioMni agent.
 
         Args:
-            path: Parent of biomni_data/ (BioMni uses path/biomni_data/data_lake). Defaults to BIOMNI_DATA_PATH or backend/data/biomni.
+            path: Parent of biomni_data/ (BioMni uses path/biomni_data/data_lake). Defaults to BIOMNI_DATA_PATH or biomni/data/biomni.
             llm: Bedrock model ID. Defaults to BIOMNI_LLM_MODEL or backend BEDROCK_CHAT_MODEL_ID.
             timeout_seconds: Timeout for agent tasks. Defaults to BIOMNI_TIMEOUT_SECONDS or 600.
             load_datalake: If True, load datalake from local path (default). If False, skip loading (faster init, some tools won't work).

@@ -2,8 +2,8 @@
 import os
 from pathlib import Path
 
-# Ensure backend root is on path when run as module
-_backend_root = Path(__file__).resolve().parent.parent  # backend/
+# Ensure biomni root is on path when run as module
+_backend_root = Path(__file__).resolve().parent.parent  # biomni/
 
 
 def get_data_path() -> str:
@@ -11,7 +11,7 @@ def get_data_path() -> str:
     path = os.getenv("BIOMNI_DATA_PATH")
     if path:
         return str(Path(path).resolve())
-    # Default: backend/data/biomni (parent of biomni_data/; BioMni will use path/biomni_data/data_lake)
+    # Default: biomni/data/biomni (parent of biomni_data/; BioMni will use path/biomni_data/data_lake)
     default = (_backend_root / "data" / "biomni").resolve()
     return str(default)
 

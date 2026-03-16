@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from api import agent_router, aws_transcribe_router, chat_router, biomni_router
+from api import agent_router, aws_transcribe_router, chat_router
 from dotenv import load_dotenv
 import structlog
 from mangum import Mangum
@@ -243,7 +243,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(agent_router)
 app.include_router(chat_router)
 app.include_router(aws_transcribe_router)
-app.include_router(biomni_router)
 
 @app.get("/health", tags=["monitoring"])
 async def health_check() -> Dict[str, Any]:
@@ -298,17 +297,6 @@ async def root() -> Dict[str, Any]:
             "AWS_transcribe": {
                 "createSession": "POST /AWS_transcribe",
                 "description": "Create a Transcribe session for streaming dictation. Returns stream_url for WebSocket. Bearer token required.",
-            },
-            "biomni": {
-                "run": "POST /biomni/run",
-                "stream": "POST /biomni/stream",
-                "ws": "WS /biomni/ws",
-                "health": "GET /biomni/health",
-                "sessions": "GET /biomni/sessions",
-                "session_pdf": "GET /biomni/sessions/{id}/pdf",
-                "mcp_servers": "GET /biomni/mcp/servers",
-                "mcp_health": "GET /biomni/mcp/health",
-                "auth": "Bearer token required for /run, /stream, /sessions, /mcp; token in query or first message for /ws",
             },
             "monitoring": {"health": "GET /health", "readiness": "GET /health/ready"},
             "documentation": {"swagger": "/docs", "redoc": "/redoc"},
