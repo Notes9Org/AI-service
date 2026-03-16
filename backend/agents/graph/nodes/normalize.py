@@ -277,6 +277,6 @@ def normalize_node(state: AgentState) -> AgentState:
         
         from agents.contracts.response import FinalResponse
         state["final_response"] = FinalResponse(
-            answer=f"Error normalizing query: {str(e)}", citations=[], confidence=0.0, tool_used="rag"
+            answer=f"Error normalizing query: {str(e)}", citations=[], confidence=0.0, tool_used="none"
         )
         return state

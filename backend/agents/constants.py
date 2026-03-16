@@ -58,7 +58,7 @@ RAG_TOP_CHUNKS = 6
 # When we have SQL IDs, fetch this many chunks per experiment/project (UUID filter)
 RAG_TOP_CHUNKS_PER_ENTITY = 3
 RAG_MAX_ENTITIES_FOR_ID_FETCH = 10
-RAG_MAX_CHUNKS_PER_SECTION = 2
+RAG_MAX_CHUNKS_PER_SECTION = 10
 
 # --- Summarizer (keep prompt bounded so LLM can handle it) ---
 SUMMARIZER_TEMPERATURE = 0.3

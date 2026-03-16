@@ -13,7 +13,6 @@ All agent prompts live here as markdown files. Domain experts can edit them with
 | evaluate_response.md | judge |
 | anchor_expander.md | enrichment |
 | rewrite_query.md | retry |
-| system_base.md | shared (optional) |
 
 ## Format
 

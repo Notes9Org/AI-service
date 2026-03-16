@@ -267,7 +267,7 @@ Biomedical AI agent powered by [Stanford Biomni](https://github.com/snap-stanfor
 }
 ```
 
-Use `query` (same as agent/run) or `prompt` (backwards compat). Either is required. `user_id` comes from Bearer token only.
+`query` is required. `user_id` is always derived from the Bearer token (JWT `sub`).
 
 **Response:** `result`, `success`, `error`, `steps`, `artifact_url`, `pdf_url`, `clarify_question`, `clarify_options`
 
@@ -291,7 +291,7 @@ Use `query` (same as agent/run) or `prompt` (backwards compat). Either is requir
 
 **Endpoint:** `WS /biomni/ws`
 
-**Description:** Bidirectional streaming. Connect with `?token=JWT` or send `{"type": "auth", "token": "..."}` first. Send `{"type": "run", "query": "...", "session_id": "..."}` to execute (or use `prompt`). `user_id` from token. Supports clarifying questions: server sends `{"type": "clarify", "question": "...", "options": [...]}`, client responds with `{"type": "clarify_response", "answer": "..."}`.
+**Description:** Bidirectional streaming. Connect with `?token=JWT` or send `{"type": "auth", "token": "..."}` first. Send `{"type": "run", "query": "...", "session_id": "..."}` to execute. `user_id` from token. Supports clarifying questions: server sends `{"type": "clarify", "question": "...", "options": [...]}`, client responds with `{"type": "clarify_response", "answer": "..."}`.
 
 ---
 

@@ -350,19 +350,27 @@ def rag_node(state: AgentState) -> AgentState:
         grouped_chunks.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
         chunks = grouped_chunks[: max(RAG_TOP_CHUNKS * raw_multiplier, len(id_filtered_chunks))]
 
-        # Deduplicate by experiment_id (keep highest similarity)
-        seen_experiments = {}
-        deduplicated = []
+        # Deduplicate by experiment_id: keep multiple chunks from the same source
+        # when they are all highly relevant (within 0.15 of the top similarity for that source).
+        # This ensures long documents contribute full context, not just one snippet.
+        from collections import defaultdict
+        exp_buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        no_exp = []
         for chunk in chunks:
             exp_id = chunk.get("experiment_id")
-            similarity = chunk.get("similarity", 0.0)
             if exp_id:
-                if exp_id not in seen_experiments or seen_experiments[exp_id]["similarity"] < similarity:
-                    seen_experiments[exp_id] = chunk
+                exp_buckets[exp_id].append(chunk)
             else:
-                deduplicated.append(chunk)
+                no_exp.append(chunk)
 
-        deduplicated.extend(seen_experiments.values())
+        deduplicated = list(no_exp)
+        for exp_id, exp_chunks in exp_buckets.items():
+            exp_chunks.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+            top_sim = exp_chunks[0].get("similarity", 0.0)
+            for c in exp_chunks:
+                if top_sim - c.get("similarity", 0.0) <= 0.15:
+                    deduplicated.append(c)
+
         deduplicated.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
         final_chunks = deduplicated[:RAG_TOP_CHUNKS]
 

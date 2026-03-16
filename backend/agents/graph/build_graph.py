@@ -152,7 +152,7 @@ def build_agent_graph() -> StateGraph:
         flags = state.get("flags") or {}
         if flags.get("sql_empty"):
             return "rag"
-        tools = router.tools if router and hasattr(router, "tools") else []
+        tools = router.tools if router and hasattr(router, "tools") else (router.get("tools", []) if isinstance(router, dict) else [])
         has_rag = TOOL_RAG in tools
         has_sql = TOOL_SQL in tools
         sql_result = state.get("sql_result")
@@ -189,7 +189,7 @@ def build_agent_graph() -> StateGraph:
         if not flags.get("rag_weak"):
             return "summarizer"
         router = state.get("router_decision")
-        tools = router.tools if router and hasattr(router, "tools") else []
+        tools = router.tools if router and hasattr(router, "tools") else (router.get("tools", []) if isinstance(router, dict) else [])
         if TOOL_SQL not in tools:
             normalized = state.get("normalized_query")
             entities = getattr(normalized, "entities", {}) if normalized else {}
