@@ -6,7 +6,7 @@ import re
 from typing import Dict, Any, Optional, Iterator, List
 import structlog
 
-from services.config import get_bedrock_config
+from services.config import get_bedrock_config, get_llm_provider
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = structlog.get_logger()
@@ -94,6 +94,7 @@ class LLMClient:
 
     def __init__(self):
         self.config = get_bedrock_config()
+        self._provider = get_llm_provider()
         self.client = self.config.create_bedrock_runtime_client()
         self.default_deployment = self.config.get_chat_model_id()
         self.default_model = self.default_deployment
