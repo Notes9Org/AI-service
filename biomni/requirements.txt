@@ -22,7 +22,8 @@ websockets>=11.0,<13.0
 # Logging
 structlog==23.2.0
 
-# Biomni biomedical agent
+# Biomni biomedical agent (requires langgraph)
+langgraph==0.2.35
 biomni>=0.0.8
 langchain-aws==0.2.35
 langchain-openai>=0.2.0
