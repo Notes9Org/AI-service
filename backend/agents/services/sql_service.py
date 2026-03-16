@@ -11,6 +11,7 @@ from services.db import SupabaseService
 from services.config import get_database_config, ConfigurationError
 from agents.services.llm_client import LLMClient, LLMError
 from agents.services.db_schema import USER_FACING_SCHEMA
+from agents.prompt_loader import load_prompt
 
 logger = structlog.get_logger()
 
@@ -176,33 +177,17 @@ class SQLService:
                 entity_filters.append("Filter by person: JOIN profiles pr ON e.created_by=pr.id, use CONCAT(pr.first_name,' ',pr.last_name) ILIKE '%name%'")
 
         entity_section = "\n".join(entity_filters) if entity_filters else ""
+        normalized_section = f"**Normalized:** {normalized_query}\n" if normalized_query else ""
 
-        prompt = f"""Generate a PostgreSQL SELECT query for a lab management system.
-
-**Query:** {query}
-{f"**Normalized:** {normalized_query}" if normalized_query else ""}
-**User ID (required for security):** {user_id}
-
-**Entities:** {entities_text or "None"}
-{entity_section}
-
-**Schema:**
-{USER_FACING_SCHEMA}
-
-**Rules:**
-1. SELECT only. No DROP/DELETE/UPDATE/INSERT.
-2. SECURITY: Every table MUST filter by created_by = '{user_id}'::uuid (or generated_by for reports).
-3. When returning projects/experiments for summaries, include p.id AS project_id, e.id AS experiment_id.
-4. Use ::uuid for UUID literals. Use table aliases: p=projects, e=experiments, s=samples.
-5. For names: REPLACE(LOWER(col), '_', ' ') ILIKE '%'||REPLACE(LOWER('name'), '_', ' ')||'%' handles spaces/underscores.
-6. No comments in SQL.
-
-**Examples:**
-- All experiments: SELECT e.*, p.id AS project_id FROM experiments e JOIN projects p ON e.project_id=p.id WHERE e.created_by='{user_id}'::uuid
-- By project name: SELECT * FROM projects WHERE REPLACE(LOWER(name),'_',' ') ILIKE '%'||REPLACE(LOWER('X'),'_',' ')||'%' AND created_by='{user_id}'::uuid
-- By person: SELECT e.* FROM experiments e JOIN profiles pr ON e.created_by=pr.id WHERE CONCAT(pr.first_name,' ',pr.last_name) ILIKE '%John%' AND e.created_by='{user_id}'::uuid
-
-Return ONLY the SQL, no markdown, no explanation."""
+        prompt_template = load_prompt("sql", "generate_query")
+        prompt = prompt_template.format(
+            query=query,
+            normalized_section=normalized_section,
+            user_id=user_id,
+            entities_text=entities_text or "None",
+            entity_section=entity_section,
+            schema=USER_FACING_SCHEMA,
+        )
 
         try:
             # Use text completion for SQL (not JSON). Use SQL-specific model when configured (e.g. Bedrock).

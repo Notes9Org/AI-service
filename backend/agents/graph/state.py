@@ -21,8 +21,6 @@ class AgentState(TypedDict):
     
     # Normalization
     normalized_query: Optional[NormalizedQuery]
-    # Optional expanded queries for multi-query retrieval (derived from normalized_query/history)
-    expanded_queries: Optional[List[str]]
     
     # Routing
     router_decision: Optional[RouterDecision]

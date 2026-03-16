@@ -3,6 +3,8 @@ import time
 import structlog
 from typing import List, Tuple
 from tenacity import RetryError
+
+from agents.prompt_loader import load_prompt
 from agents.graph.state import AgentState
 from agents.graph.stream_utils import emit_stream_event
 from agents.contracts.normalized import NormalizedQuery
@@ -107,47 +109,14 @@ def normalize_node(state: AgentState) -> AgentState:
                 f"{msg.get('role', getattr(msg, 'role', 'user'))}: {msg.get('content', getattr(msg, 'content', ''))}"
                 for msg in history[-5:]
             ])
-        
-        prompt = f"""Normalize the following user query for a scientific lab management system.
+        if not history_text:
+            history_text = "None"
 
-DOMAIN and IN-SCOPE rules:
-- Users store lab notes, literature, protocols, and reports IN the system. Queries like "explain X", "what is X", "tell me about X", "find notes about X" are IN-SCOPE.
-- Set in_scope=FALSE only for queries plainly unrelated to lab/research (weather, recipes, sports, "write a poem", "current news").
-- When doubtful, prefer in_scope=TRUE and intent="hybrid" so we try both SQL and RAG.
-
-INTENT rules (choose the best fit; when ambiguous, prefer "hybrid" or "detail"):
-- "aggregate": Pure counts, lists, status queries (e.g. "How many experiments?", "List my projects", "What's the status of X?"). Use SQL only. Set requires_aggregation=true, requires_semantic_search=false.
-- "search": Pure semantic search for concepts in documents (e.g. "Find notes about PCR", "What does the literature say about X?"). Use RAG only. Set requires_aggregation=false, requires_semantic_search=true.
-- "hybrid": Query needs BOTH structured data AND document search (e.g. "Experiments in project X and their notes", "Status and details of experiment Y"). Set requires_aggregation=true, requires_semantic_search=true.
-- "detail": "Tell me about X", "Explain X", "What can you tell me about X" — user wants comprehensive info. ALWAYS use BOTH SQL and RAG. Set requires_aggregation=true, requires_semantic_search=true.
-- "other": Only when in_scope is false.
-
-User Query: {query_text}
-
-Conversation History:
-{history_text if history_text else 'None'}
-
-Extract and return JSON with:
-1. domain: "lab"|"general"|"unknown"
-2. in_scope: true|false
-3. out_of_scope_reason: null or "short reason" (when in_scope is false)
-4. intent: "aggregate"|"search"|"hybrid"|"detail"|"other"
-5. normalized_query: Cleaned query text preserving scientific terms.
-6. entities: Dict with extracted entities (project_names, experiment_names, dates, etc.); empty when pure search.
-7. context: Dict with requires_aggregation (bool), requires_semantic_search (bool), time_range when relevant.
-8. history_summary: Brief summary of relevant conversation history (only if history exists and is relevant).
-
-Return ONLY valid JSON:
-{{
-  "domain": "lab|general|unknown",
-  "in_scope": true or false,
-  "out_of_scope_reason": null or "short reason string",
-  "intent": "aggregate|search|hybrid|detail|other",
-  "normalized_query": "cleaned query text",
-  "entities": {{}},
-  "context": {{"requires_aggregation": true/false, "requires_semantic_search": true/false}},
-  "history_summary": null or "summary string"
-}}"""
+        prompt_template = load_prompt("normalize", "classify_query")
+        prompt = prompt_template.format(
+            query_text=query_text,
+            history_text=history_text,
+        )
 
         llm_client = get_llm_client()
         schema = {
@@ -220,17 +189,11 @@ Return ONLY valid JSON:
         
         # Out-of-scope: generate polite message via LLM and set final_response so graph goes to final
         if not normalized.in_scope:
-            out_prompt = f"""The user asked something that is not related to this system's domain.
-
-User query: {query_text}
-Reason out of scope: {normalized.out_of_scope_reason or 'Not about lab management'}
-
-This system only helps with: experiments, projects, samples, protocols, equipment, reports, lab notes, and literature within the lab management system.
-
-Generate a single short, polite response (1-2 sentences) that:
-1. States that this question is not within the system's domain or not something we can help with (similar meaning).
-2. Briefly mentions what we can help with (lab management: experiments, projects, samples, etc.).
-Do not apologize excessively. Be clear and helpful. Return ONLY the response text, no JSON, no quotes."""
+            out_prompt_template = load_prompt("normalize", "out_of_scope_response")
+            out_prompt = out_prompt_template.format(
+                query_text=query_text,
+                out_of_scope_reason=normalized.out_of_scope_reason or "Not about lab management",
+            )
 
             try:
                 out_msg = llm_client.complete_text(

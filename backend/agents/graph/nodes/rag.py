@@ -262,25 +262,12 @@ def rag_node(state: AgentState) -> AgentState:
                 )
 
         # Global semantic search: optionally use hybrid search and fetch more raw candidates,
-        # then group by (source_type, source_id, section_index, chunk_version). Support multi-query
-        # retrieval by using expanded_queries from state when present.
+        # then group by (source_type, source_id, section_index, chunk_version).
         raw_multiplier = max(getattr(app_config, "rag_raw_chunks_multiplier", 3), 1)
         global_match_count = max(RAG_TOP_CHUNKS * raw_multiplier, RAG_TOP_CHUNKS)
         use_hybrid = getattr(app_config, "rag_use_hybrid", False)
 
-        # Build list of (query_text, embedding) pairs: base + expanded queries
-        # Use batch embedding for expanded queries to avoid sequential API round-trips
         query_pairs: List[Tuple[str, List[float]]] = [(normalized.normalized_query, query_embedding)]
-        expanded = state.get("expanded_queries") or []
-        expanded_clean = [q.strip() for q in expanded if isinstance(q, str) and q.strip()] if isinstance(expanded, list) else []
-        if expanded_clean:
-            try:
-                batch_embeddings = embedding_service.embed_batch(expanded_clean)
-                for q_text, emb in zip(expanded_clean, batch_embeddings):
-                    if emb:
-                        query_pairs.append((q_text, emb))
-            except Exception as e:
-                logger.warning("RAG: batch embed of expanded queries failed", run_id=run_id, error=str(e))
 
         chunks_semantic: List[Dict[str, Any]] = []
         for q_text, q_embedding in query_pairs:

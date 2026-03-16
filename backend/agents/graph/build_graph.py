@@ -14,7 +14,6 @@ from agents.constants import (
 )
 from services.config import get_app_config
 from agents.graph.nodes.normalize import normalize_node
-from agents.graph.nodes.query_expander import query_expander_node
 from agents.graph.nodes.router import router_node
 from agents.graph.nodes.sql import sql_node
 from agents.graph.nodes.rag import rag_node
@@ -92,7 +91,6 @@ def build_agent_graph() -> StateGraph:
     
     # Add nodes
     graph.add_node("normalize", normalize_node)
-    graph.add_node("query_expander", query_expander_node)
     graph.add_node("router", router_node)
     graph.add_node("sql", sql_node)
     graph.add_node("rag", rag_node)
@@ -105,21 +103,18 @@ def build_agent_graph() -> StateGraph:
     # Add edges
     graph.set_entry_point("normalize")
     
-    # normalize → final (if out-of-scope response set) or query_expander
+    # normalize → final (if out-of-scope response set) or router
     def route_after_normalize(state: AgentState) -> str:
-        """If normalize set final_response (e.g. out-of-scope), go to final; else query_expander."""
+        """If normalize set final_response (e.g. out-of-scope), go to final; else router."""
         if state.get("final_response"):
             return "final"
-        return "query_expander"
+        return "router"
     
     graph.add_conditional_edges(
         "normalize",
         route_after_normalize,
-        {"final": "final", "query_expander": "query_expander"}
+        {"final": "final", "router": "router"}
     )
-    
-    # query_expander → router (always)
-    graph.add_edge("query_expander", "router")
     
     # router → final (out_of_scope) or tools (conditional routing)
     def route_after_router(state: AgentState) -> str:

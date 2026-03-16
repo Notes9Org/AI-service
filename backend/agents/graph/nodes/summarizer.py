@@ -8,6 +8,7 @@ from agents.graph.state import AgentState
 from agents.graph.stream_utils import emit_stream_event
 from agents.graph.nodes.normalize import get_llm_client
 from agents.services.llm_client import parse_llm_json
+from agents.prompt_loader import load_prompt
 from agents.constants import (
     TOOL_SQL,
     SUMMARIZER_TEMPERATURE,
@@ -175,66 +176,36 @@ def summarizer_node(state: AgentState) -> AgentState:
             max_content_len=SUMMARIZER_ENRICHED_CONTENT_LEN,
         )
 
-        # Keep total prompt within model context to avoid LLMError/RetryError.
-        # Short system prompt reduces tokens and latency (summarizer is often the slowest node).
-        prompt_body = f"""You are a senior scientific analyst for an electronic lab notebook system. Produce a direct, complete answer from the evidence below. Use database Facts for counts, names, dates; use document excerpts for context. Cite with [1], [2]. If the user asks for specific items (e.g. project name, where something is mentioned), state them explicitly from the evidence.
-        Make sure the given answer is complete and addresses the user's question and frame the answer in a way that is easy to understand and follow.
+        # Build prompt from template (prompts/summarizer/summarize_results.md)
+        history_section = f"\n**Conversation context:** {history_summary}\n\n" if history_summary else ""
+        followup_section = (
+            f"\n**Relevant follow-up (lab notes, protocols — cite by source):**\n{relevant_followup}"
+            if relevant_followup
+            else ""
+        )
+        thin_note = (
+            " If there is no follow-up (lab notes/protocols), say so in one short sentence."
+            if (sql_anchors and not relevant_followup)
+            else ""
+        )
 
-**User query:** {original_query}
-"""
-        if history_summary:
-            prompt_body += f"""
-**Conversation context:** {history_summary}
-
-"""
-        prompt_body += f"""
-
-**Facts (from database — authoritative for counts, names, status, dates, assignments):**
-{facts_from_db}
-
-**Relevant excerpts (from documents — cite as [1], [2], etc.):**
-{relevant_excerpts}"""
-        if relevant_followup:
-            prompt_body += f"""
-
-**Relevant follow-up (lab notes, protocols — cite by source):**
-{relevant_followup}"""
-        if len(prompt_body) > SUMMARIZER_PROMPT_MAX_CHARS:
+        prompt_template = load_prompt("summarizer", "summarize_results")
+        prompt = prompt_template.format(
+            original_query=original_query,
+            history_section=history_section,
+            facts_from_db=facts_from_db,
+            relevant_excerpts=relevant_excerpts,
+            followup_section=followup_section,
+            thin_note=thin_note,
+        )
+        if len(prompt) > SUMMARIZER_PROMPT_MAX_CHARS:
             logger.warning(
                 "Summarizer prompt truncated to fit context",
                 run_id=run_id,
-                original_len=len(prompt_body),
+                original_len=len(prompt),
                 max_chars=SUMMARIZER_PROMPT_MAX_CHARS,
             )
-            prompt_body = prompt_body[: SUMMARIZER_PROMPT_MAX_CHARS - 200].rstrip() + "\n\n[Context truncated for length.]"
-        
-        thin_note = ""
-        if sql_anchors and not relevant_followup:
-            thin_note = " If there is no follow-up (lab notes/protocols), say so in one short sentence."
-        rules_and_json = f"""
-**Answer quality rules:**
-1. Lead with the direct answer. If the user asked for specific items (e.g. project name, experiment name, where something is mentioned), include those explicitly from the Facts or excerpts—cite the source.
-2. Back each major claim with a citation [1], [2], etc. Place citations inline next to the claim they support.
-3. Use Facts (from database) as ground truth for counts, names, status, dates. Refer to projects and experiments by name only. Never put UUIDs or "source_type (uuid):" in the answer.
-4. When the evidence is insufficient, say so—do not hallucinate.
-5. Structure complex answers with bullet points or numbered lists where helpful.{thin_note}
-
-Return JSON with:
-{{
-  "answer": "Comprehensive, well-structured answer with inline [1], [2] citation markers. No UUIDs in the answer body.",
-  "citations": [
-    {{
-      "source_type": "lab_note|protocol|report|experiment_summary|sql",
-      "source_id": "UUID or identifier",
-      "chunk_id": "UUID or null",
-      "relevance": 0.0-1.0,
-      "excerpt": "Relevant excerpt or null"
-    }}
-  ]
-}}
-
-Citations must reference only sources from the Facts and excerpts above."""
-        prompt = prompt_body + rules_and_json
+            prompt = prompt[: SUMMARIZER_PROMPT_MAX_CHARS - 200].rstrip() + "\n\n[Context truncated for length.]"
 
         # Schema: citations by index (1-based = document [1],[2]...; 0 = data from records only)
         schema = {

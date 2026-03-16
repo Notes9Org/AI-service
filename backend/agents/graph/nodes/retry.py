@@ -13,6 +13,7 @@ from services.trace_service import TraceService
 from services.config import get_app_config
 from agents.services.thinking_logger import get_thinking_logger
 from agents.graph.nodes.normalize import get_llm_client
+from agents.prompt_loader import load_prompt
 
 logger = structlog.get_logger()
 
@@ -121,22 +122,14 @@ def _do_query_rewrite(state: AgentState) -> None:
     extracted_block = _format_extracted_for_prompt(extracted)
     if not rewrite_hint and not extracted_block:
         return
-    prompt_parts = [
-        "The following user query should be rewritten to be more specific so the system can answer it better.",
-        "",
-        f"Original query: {query_text}",
-    ]
-    if rewrite_hint:
-        prompt_parts.append("")
-        prompt_parts.append(f"Hint from judge: {rewrite_hint}")
-    if extracted_block:
-        prompt_parts.append("")
-        prompt_parts.append(extracted_block)
-    prompt_parts.extend([
-        "",
-        "Rewrite the query to include concrete entities where relevant (e.g. project name, experiment name from the extracted data). Keep it one sentence. If the original is already clear and no enrichment applies, return it unchanged. Return ONLY the rewritten query text, no JSON, no explanation.",
-    ])
-    prompt = "\n".join(prompt_parts)
+    hint_section = f"\n\nHint from judge: {rewrite_hint}" if rewrite_hint else ""
+    extracted_section = f"\n\n{extracted_block}" if extracted_block else ""
+    prompt_template = load_prompt("retry", "rewrite_query")
+    prompt = prompt_template.format(
+        query_text=query_text,
+        hint_section=hint_section,
+        extracted_section=extracted_section,
+    )
     try:
         llm_client = get_llm_client()
         rewritten = llm_client.complete_text(prompt=prompt, temperature=0.2)

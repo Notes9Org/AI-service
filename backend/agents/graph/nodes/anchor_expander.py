@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Set
 from agents.graph.state import AgentState
 from agents.graph.stream_utils import emit_stream_event
 from agents.graph.nodes.normalize import get_llm_client
+from agents.prompt_loader import load_prompt
 from agents.constants import (
     TOOL_SQL,
     TOOL_RAG,
@@ -122,20 +123,13 @@ def _generate_enrichment_queries(
     experiment_ids = anchors.get("experiment_ids", [])[:5]
     if not project_ids and not experiment_ids:
         return []
-    prompt = f"""The user asked: "{user_query}"
-
-We have SQL results with these project and experiment identifiers. We need to fetch lab notes, protocols, and literature for follow-up summaries.
-- project_ids: {project_ids}
-- experiment_ids: {experiment_ids}
-
-Generate 1 to {MAX_ENRICHMENT_QUERIES} short follow-up queries to fetch meaningful context (notes, protocols, experiment details) for these entities. Each query should be targeted, e.g. "notes and protocols for experiment", "lab notes and summary for project", "experiment methods and results".
-
-Return a JSON array of objects. Each object must have:
-- "query_text": string (short search phrase)
-- "experiment_id": null or one UUID from {experiment_ids[:3]}
-- "project_id": null or one UUID from {project_ids[:3]}
-
-Use at most {MAX_ENRICHMENT_QUERIES} objects. Prefer experiment_id when both apply. Return ONLY the JSON array, no markdown."""
+    prompt_template = load_prompt("enrichment", "anchor_expander")
+    prompt = prompt_template.format(
+        user_query=user_query,
+        project_ids=project_ids,
+        experiment_ids=experiment_ids,
+        max_queries=MAX_ENRICHMENT_QUERIES,
+    )
 
     schema = {
         "type": "array",

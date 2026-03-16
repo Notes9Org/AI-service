@@ -124,42 +124,16 @@ def judge_node(state: AgentState) -> AgentState:
             for c in citations
         ])
         
-        prompt = f"""Judge the following answer for a scientific lab management query.
+        from agents.prompt_loader import load_prompt
 
-Original Query: {original_query}
-
-Generated Answer:
-{answer}
-
-Citations:
-{citations_text}
-
-SQL Facts (authoritative):
-{sql_facts}
-
-RAG Evidence (context):
-{rag_evidence}
-
-Evaluate the answer on:
-1. Factual Consistency: Do numbers/statistics in the answer match SQL facts? Are claims supported?
-2. Citation Coverage: Are all factual claims properly cited? Do citations reference real sources?
-3. Scope Leakage: Does the answer stay within the query scope? No hallucinated information?
-4. Completeness: Does the answer fully address the query? Missing important points?
-
-Return JSON with:
-{{
-  "verdict": "pass" or "fail",
-  "confidence": 0.0-1.0,
-  "issues": ["list of specific issues if any"],
-  "suggested_revision": "optional improved answer or null"
-}}
-
-Verdict "pass" if:
-- Facts match SQL data and the answer includes any specific items the user asked for (e.g. project name, experiment name, "where it is mentioned") when that information is in the Facts or RAG evidence.
-- All major claims are cited.
-- No scope leakage; query is substantially answered.
-
-Verdict "fail" only for major issues: wrong facts, missing citations for key claims, or clearly missing a requested detail that exists in the evidence."""
+        prompt_template = load_prompt("judge", "evaluate_response")
+        prompt = prompt_template.format(
+            original_query=original_query,
+            answer=answer,
+            citations_text=citations_text,
+            sql_facts=sql_facts,
+            rag_evidence=rag_evidence,
+        )
 
         # Define schema
         schema = {
