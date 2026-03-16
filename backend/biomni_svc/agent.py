@@ -22,9 +22,6 @@ def get_biomni_agent():
     ensure_bedrock_env()
     cfg = get_biomni_config()
 
-    if cfg.path.startswith("s3://"):
-        import s3fs  # noqa: F401 - registers fsspec handler for s3://
-
     try:
         from biomni.agent import A1
         from biomni.config import default_config

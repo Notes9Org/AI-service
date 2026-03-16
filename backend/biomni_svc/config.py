@@ -60,7 +60,7 @@ class BiomniConfig:
     """Biomni agent configuration from environment variables."""
 
     def __init__(self):
-        # BIOMNI_PATH (EFS/local) takes precedence over S3 when set
+        # BIOMNI_PATH (EFS/local) or fallback to writable path
         path = os.getenv("BIOMNI_PATH") or os.getenv("BIOMNI_DATA_PATH")
         if path:
             resolved = str(Path(path).resolve())
@@ -78,14 +78,9 @@ class BiomniConfig:
             else:
                 self.path = resolved
         else:
-            bucket = os.getenv("BIOMNI_S3_DATALAKE_BUCKET", "").strip()
-            prefix = os.getenv("BIOMNI_S3_DATALAKE_PREFIX", "biomni/datalake").strip().rstrip("/")
-            if bucket:
-                self.path = f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
-            else:
-                default = _get_writable_fallback_path()
-                default.mkdir(parents=True, exist_ok=True)
-                self.path = str(default)
+            default = _get_writable_fallback_path()
+            default.mkdir(parents=True, exist_ok=True)
+            self.path = str(default)
         self.llm = os.getenv("BIOMNI_LLM") or os.getenv("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
         self.timeout_seconds = int(os.getenv("BIOMNI_TIMEOUT_SECONDS", "600"))
         self.temperature = float(os.getenv("BIOMNI_TEMPERATURE", "0.7"))

@@ -11,7 +11,7 @@ postgrest==0.13.0
 # JWT verification (Supabase Auth Bearer token)
 PyJWT>=2.8.0
 
-# AWS Bedrock (pinned for s3fs/aiobotocore compatibility)
+# AWS Bedrock
 boto3==1.41.5
 
 # Text processing
@@ -46,6 +46,5 @@ structlog==23.2.0
 biomni>=0.0.8
 langchain-aws==0.2.35
 langchain-openai>=0.2.0
-s3fs==2024.12.0
 reportlab>=4.0.0
 pandas>=2.0.0
