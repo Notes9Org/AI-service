@@ -323,7 +323,11 @@ class SupabaseConfig:
         """Get Supabase client (imported here to avoid circular imports)."""
         try:
             from supabase import create_client, Client
-            return create_client(self.url, self.service_key)
+            from supabase.lib.client_options import ClientOptions
+
+            timeout = int(os.getenv("SUPABASE_CLIENT_TIMEOUT", "60"))
+            opts = ClientOptions(postgrest_client_timeout=timeout)
+            return create_client(self.url, self.service_key, options=opts)
         except Exception as e:
             raise ConfigurationError(
                 f"Supabase service is not available: Failed to create client. Error: {str(e)}"
