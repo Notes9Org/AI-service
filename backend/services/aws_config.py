@@ -1,4 +1,10 @@
-"""AWS Bedrock configuration. All AWS/LLM provider=bedrock settings live here."""
+"""AWS Bedrock configuration. All AWS/LLM provider=bedrock settings live here.
+
+To change the chat model: set these in backend/.env (copy from .env.example):
+  BEDROCK_CHAT_MODEL_ID          — agent pipeline (normalize, router, judge, retry, RAG)
+  BEDROCK_CHAT_MODEL_ID_SQL     — optional: SQL generation only (defaults to main)
+  BEDROCK_CHAT_MODEL_ID_SUMMARY — summarizer + general chat /chat endpoint (defaults to main)
+"""
 import os
 from typing import Optional
 

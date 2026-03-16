@@ -100,8 +100,8 @@ async def chat(
     session_id = request.session_id
     logger.info("chat_request", user_id=user_id, session_id=session_id, content_len=len(request.content), history_len=len(request.history))
     messages = [{"role": m.role, "content": m.content} for m in request.history] + [{"role": "user", "content": request.content}]
-    # Only Bedrock is supported as provider; use its configured chat model.
-    model_id = get_bedrock_config().get_chat_model_id()
+    # General chat uses the same model as summarizer (BEDROCK_CHAT_MODEL_ID_SUMMARY).
+    model_id = get_bedrock_config().get_chat_model_id_summary()
     try:
         client = LLMClient()
         content = client.chat(
@@ -129,7 +129,7 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
     logger.info("chat_stream_request", user_id=user_id, session_id=session_id, content_len=len(request.content), history_len=len(request.history))
 
     messages = [{"role": m.role, "content": m.content} for m in request.history] + [{"role": "user", "content": request.content}]
-    model_id = get_bedrock_config().get_chat_model_id()
+    model_id = get_bedrock_config().get_chat_model_id_summary()
     queue: Queue = Queue()
 
     def run_stream():
