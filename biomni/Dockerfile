@@ -8,9 +8,10 @@ RUN yum install -y gcc gcc-c++ make libxml2-devel libxslt-devel \
     postgresql-devel \
     && yum clean all
 
-# Install Python deps
+# Install Python deps (tiktoken needs prebuilt wheel to avoid Rust build)
 COPY requirements.txt .
 RUN pip install --upgrade pip \
+    && pip install --no-cache-dir --only-binary :all: tiktoken \
     && pip install --no-cache-dir -r requirements.txt
 
 # Verify Biomni imports (fail build if missing)
