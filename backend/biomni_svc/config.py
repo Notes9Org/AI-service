@@ -29,6 +29,13 @@ def _is_path_writable(path: str) -> bool:
         return False
 
 
+def _get_writable_fallback_path() -> Path:
+    """Return a writable path for biomni data. Use /tmp in Lambda (read-only /var/task)."""
+    if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return Path("/tmp/biomni")
+    return (_backend_root / "data" / "biomni").resolve()
+
+
 def ensure_bedrock_env() -> None:
     """Set Biomni env vars for Bedrock. Uses existing AWS credentials from boto3 chain."""
     os.environ.setdefault("LLM_SOURCE", "Bedrock")
@@ -57,16 +64,16 @@ class BiomniConfig:
         path = os.getenv("BIOMNI_PATH") or os.getenv("BIOMNI_DATA_PATH")
         if path:
             resolved = str(Path(path).resolve())
-            # If path is under /mnt and read-only, fall back to local storage
-            if resolved.startswith("/mnt") and not _is_path_writable(resolved):
-                local_fallback = (_backend_root / "data" / "biomni").resolve()
-                local_fallback.mkdir(parents=True, exist_ok=True)
-                self.path = str(local_fallback)
+            # If path is read-only (e.g. /mnt EFS not mounted, or /var/task in Lambda), use writable fallback
+            if not _is_path_writable(resolved):
+                fallback = _get_writable_fallback_path()
+                fallback.mkdir(parents=True, exist_ok=True)
+                self.path = str(fallback)
                 logger.warning(
                     "biomni_path_fallback",
                     configured=resolved,
-                    fallback=self.path,
-                    reason="Read-only filesystem under /mnt",
+                    fallback=str(fallback),
+                    reason="Read-only filesystem",
                 )
             else:
                 self.path = resolved
@@ -76,7 +83,8 @@ class BiomniConfig:
             if bucket:
                 self.path = f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
             else:
-                default = (_backend_root / "data" / "biomni").resolve()
+                default = _get_writable_fallback_path()
+                default.mkdir(parents=True, exist_ok=True)
                 self.path = str(default)
         self.llm = os.getenv("BIOMNI_LLM") or os.getenv("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
         self.timeout_seconds = int(os.getenv("BIOMNI_TIMEOUT_SECONDS", "600"))
