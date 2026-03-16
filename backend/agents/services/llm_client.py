@@ -111,8 +111,8 @@ class LLMClient:
         )
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=8, max=60),
     )
     def complete_json(
         self,
@@ -291,8 +291,8 @@ class LLMClient:
             raise LLMError(f"Chat stream failed: {str(e)}") from e
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=8, max=60),
     )
     def complete_text(
         self,
@@ -340,15 +340,36 @@ class LLMClient:
         """
         Generate text output from prompt, yielding tokens as they arrive.
         Supports Bedrock converse_stream and Azure streaming.
+        Retries on ThrottlingException with exponential backoff (stream restarts).
         """
         model = model or self.default_deployment
         if self._provider == "bedrock":
-            yield from self._converse_stream_bedrock(
-                model=model,
-                system="You are a helpful assistant.",
-                user=prompt,
-                temperature=temperature,
-            )
+            last_error = None
+            for attempt in range(1, 6):
+                try:
+                    yield from self._converse_stream_bedrock(
+                        model=model,
+                        system="You are a helpful assistant.",
+                        user=prompt,
+                        temperature=temperature,
+                    )
+                    return
+                except Exception as e:
+                    last_error = e
+                    is_throttle = "Throttling" in str(e) or "Too many requests" in str(e)
+                    if is_throttle and attempt < 5:
+                        wait_sec = min(60, 8 * (2 ** (attempt - 1)))
+                        logger.warning(
+                            "Stream throttled, retrying",
+                            attempt=attempt,
+                            wait_sec=wait_sec,
+                            error=str(e)[:100],
+                        )
+                        time.sleep(wait_sec)
+                        continue
+                    raise
+            if last_error:
+                raise last_error
         else:
             yield from self._complete_text_stream_azure(model, prompt, temperature)
 
