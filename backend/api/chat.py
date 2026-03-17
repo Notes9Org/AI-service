@@ -217,9 +217,12 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
     last_ping = 0.0
 
     try:
+        loop = asyncio.get_event_loop()
         while True:
             try:
-                event_type, data = queue.get(timeout=0.5)
+                event_type, data = await loop.run_in_executor(
+                    None, lambda: queue.get(timeout=0.5)
+                )
             except Empty:
                 if stream_task.done():
                     while True:
