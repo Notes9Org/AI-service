@@ -322,11 +322,11 @@ class SupabaseConfig:
     def get_client(self):
         """Get Supabase client (imported here to avoid circular imports)."""
         try:
-            from supabase import create_client, Client
-            from supabase.lib.client_options import ClientOptions
+            from supabase import create_client
+            from supabase.lib.client_options import SyncClientOptions
 
             timeout = int(os.getenv("SUPABASE_CLIENT_TIMEOUT", "60"))
-            opts = ClientOptions(postgrest_client_timeout=timeout)
+            opts = SyncClientOptions(postgrest_client_timeout=timeout)
             return create_client(self.url, self.service_key, options=opts)
         except Exception as e:
             raise ConfigurationError(

@@ -1,25 +1,24 @@
-"""
-Claude (AWS Bedrock) chat endpoint.
+"""Chat API routes.
 
-POST /chat: send user message content and optional history; receive assistant reply.
-POST /chat/stream: same as /chat but returns SSE with token events.
-Requires Bearer token (Supabase Auth).
-Follows /notes9/run input schema pattern - content, session_id, history for memory management.
+POST /chat        : regular JSON chat (no streaming).
+POST /chat/stream : SSE streaming endpoint for general chat.
+Both require Bearer token (Supabase Auth).
 """
 import asyncio
 import json
+import time
 from queue import Empty, Queue
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 import structlog
 
-from agents.services.llm_client import LLMClient, LLMError
+from agents.services.anthropic_client import AnthropicChatClient
+from agents.services.llm_client import LLMError
 from services.auth import CurrentUser, get_current_user
-from services.config import get_bedrock_config
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -51,7 +50,20 @@ Response formatting (critical for UI display):
 8. If the answer is simple, respond in plain prose. Only use lists and headings when the content genuinely needs structure.
 9. Never repeat the user's question back to them before answering.
 10. End naturally. Do not add closings like "I hope this helps!" or "Let me know if you need anything else!"
-11. When referring to documents or sources, use descriptive names or labels (e.g. "the lab note", "the protocol"). Never include IDs, UUIDs, or technical references like "source_id" in the response."""
+11. When referring to documents or sources, use descriptive names or labels (e.g. "the lab note", "the protocol"). Never include IDs, UUIDs, or technical references like "source_id" in the response.
+
+Additional behavior guidelines:
+- Prefer concise, directly actionable answers; avoid rambling or unnecessary explanation.
+- Use web search tools only when the question depends on current or external information; otherwise answer from your own knowledge.
+- When you do use the web, integrate results into a single coherent answer instead of listing raw links.
+- If information is uncertain or conflicting online, say so explicitly and state your best-judgment answer.
+
+Citation format (when using web search):
+- When citing a web source, use numbered inline citations [1], [2], [3] immediately after the cited claim or phrase.
+- Example: "Medicines for Malaria Venture (MMV), [1] announced a new combination therapy..."
+- Each number corresponds to a source that will be displayed as a clickable link. Use [1] for the first source, [2] for the second, etc.
+- Place the citation marker right after the phrase or sentence it supports.
+"""
 
 
 class ChatMessage(BaseModel):
@@ -82,39 +94,48 @@ class ChatRequest(BaseModel):
     )
 
 
-class ChatResponse(BaseModel):
-    """Response for POST /chat."""
-    content: str = Field(..., description="Assistant reply text")
-    role: str = Field(default="assistant", description="Message role")
-
-
-@router.post("", response_model=ChatResponse, summary="Chat with Claude / LLM")
+@router.post("", summary="Chat with Claude / LLM (JSON, non-streaming)")
 async def chat(
     request: ChatRequest,
     current_user: CurrentUser = Depends(get_current_user),
-) -> ChatResponse:
+):
     """
-    **Chat endpoint.** Send content; receive assistant reply. System prompt, model, temperature are internal.
+    **Chat endpoint (non-streaming).**
+
+    Calls Anthropic once and returns the full assistant message as JSON:
+    `{ "content": "<assistant text>", "role": "assistant", "sources"?: [...], "searched_web"?: true }`
+    When web search is used, includes sources and searched_web for citation display.
     """
     user_id = current_user.user_id
     session_id = request.session_id
-    logger.info("chat_request", user_id=user_id, session_id=session_id, content_len=len(request.content), history_len=len(request.history))
-    messages = [{"role": m.role, "content": m.content} for m in request.history] + [{"role": "user", "content": request.content}]
-    # General chat uses the same model as summarizer (BEDROCK_CHAT_MODEL_ID_SUMMARY).
-    model_id = get_bedrock_config().get_chat_model_id_summary()
+    logger.info(
+        "chat_request",
+        user_id=user_id,
+        session_id=session_id,
+        content_len=len(request.content),
+        history_len=len(request.history),
+    )
+
+    messages = [{"role": m.role, "content": m.content} for m in request.history] + [
+        {"role": "user", "content": request.content}
+    ]
+
     try:
-        client = LLMClient()
-        content = client.chat(
+        client = AnthropicChatClient()
+
+        result = await asyncio.to_thread(
+            client.chat,
             messages=messages,
             system=DEFAULT_SYSTEM_PROMPT,
-            model=model_id,
-            temperature=0.7,
+            use_web=True,
         )
-        return ChatResponse(content=content, role="assistant")
+        return JSONResponse(status_code=200, content=result)
     except LLMError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.error("chat_failed_llm", error=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+        logger.error("chat_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail="Chat request failed") from e
 
 
 def _format_sse(event_type: str, data: dict) -> str:
@@ -123,30 +144,65 @@ def _format_sse(event_type: str, data: dict) -> str:
 
 
 async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser):
-    """Async generator that streams chat tokens as SSE events."""
+    """Async generator that streams chat tokens as SSE events.
+
+    Event lifecycle (matches notes9 pattern):
+      thinking(chat started) → thinking(browsing) → token* → source* → thinking(completed) → done
+    Uses ping keepalive when idle (like notes9) so long web searches don't timeout.
+    """
     user_id = current_user.user_id
     session_id = request.session_id
-    logger.info("chat_stream_request", user_id=user_id, session_id=session_id, content_len=len(request.content), history_len=len(request.history))
+    logger.info(
+        "chat_stream_request",
+        user_id=user_id,
+        session_id=session_id,
+        content_len=len(request.content),
+        history_len=len(request.history),
+    )
 
-    messages = [{"role": m.role, "content": m.content} for m in request.history] + [{"role": "user", "content": request.content}]
-    model_id = get_bedrock_config().get_chat_model_id_summary()
+    messages = [{"role": m.role, "content": m.content} for m in request.history] + [
+        {"role": "user", "content": request.content}
+    ]
     queue: Queue = Queue()
+    use_web = True
 
     def run_stream():
         try:
-            client = LLMClient()
-            content_parts = []
-            for token in client.chat_stream(
+            client = AnthropicChatClient()
+            content_parts: list[str] = []
+            sources: list[dict] = []
+            for item in client.chat_stream(
                 messages=messages,
                 system=DEFAULT_SYSTEM_PROMPT,
-                model=model_id,
-                temperature=0.7,
+                use_web=use_web,
             ):
-                content_parts.append(token)
-                queue.put(("token", {"text": token}))
-            queue.put(("done", {"content": "".join(content_parts), "role": "assistant"}))
+                if item.get("type") == "token":
+                    text = item.get("text", "")
+                    content_parts.append(text)
+                    queue.put(("token", {"text": text}))
+                elif item.get("type") == "source":
+                    src = {"url": item.get("url", ""), "title": item.get("title", "")}
+                    sources.append(src)
+                    queue.put(("source", src))
+            content = "".join(content_parts)
+            done_data = {"content": content, "role": "assistant"}
+            if sources:
+                done_data["sources"] = sources
+                done_data["searched_web"] = True
+            queue.put(("stream_complete", done_data))
         except Exception as e:
             queue.put(("error", {"error": str(e)}))
+
+    yield _format_sse("thinking", {
+        "node": "chat",
+        "status": "started",
+        "message": "Generating response...",
+    })
+    yield _format_sse("thinking", {
+        "node": "browsing",
+        "status": "started",
+        "message": "Searching the web when needed...",
+    })
 
     task = asyncio.to_thread(run_stream)
 
@@ -154,6 +210,9 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
         await task
 
     stream_task = asyncio.create_task(collect())
+    final_content: dict | None = None
+    PING_INTERVAL_SEC = 15.0
+    last_ping = 0.0
 
     try:
         while True:
@@ -161,22 +220,47 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
                 event_type, data = queue.get(timeout=0.5)
             except Empty:
                 if stream_task.done():
-                    # Drain any remaining items (producer may have just finished)
                     while True:
                         try:
                             event_type, data = queue.get_nowait()
-                            yield _format_sse(event_type, data)
-                            if event_type in ("done", "error"):
-                                break
+                            if event_type == "stream_complete":
+                                final_content = data
+                            elif event_type == "error":
+                                yield _format_sse("error", data)
+                            else:
+                                yield _format_sse(event_type, data)
                         except Empty:
                             break
+                    break
+                now = time.time()
+                if now - last_ping >= PING_INTERVAL_SEC:
+                    last_ping = now
+                    yield _format_sse("ping", {"ts": now})
+                continue
+
+            if event_type == "stream_complete":
+                final_content = data
+                break
+            if event_type == "error":
+                yield _format_sse("error", data)
                 break
 
             yield _format_sse(event_type, data)
-            if event_type in ("done", "error"):
-                break
 
         await stream_task
+
+        if final_content:
+            yield _format_sse("thinking", {
+                "node": "browsing",
+                "status": "completed",
+                "message": "Search complete",
+            })
+            yield _format_sse("thinking", {
+                "node": "chat",
+                "status": "completed",
+                "message": "Response complete",
+            })
+            yield _format_sse("done", final_content)
     except Exception as e:
         logger.error("chat_stream failed", error=str(e))
         yield _format_sse("error", {"error": str(e)})
@@ -189,7 +273,8 @@ async def chat_stream(
 ):
     """
     **Chat stream endpoint.** Same as POST /chat but returns text/event-stream.
-    Events: token (incremental text), done (full content), error.
+    Events: thinking, ping (keepalive), token, source (web links), done, error.
+    Uses web search when needed; sources/links are emitted as source events.
     """
     return StreamingResponse(
         _stream_chat_generator(request, current_user=current_user),

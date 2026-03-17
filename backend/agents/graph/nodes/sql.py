@@ -43,7 +43,7 @@ def _has_structured_entities(normalized) -> bool:
 
 def sql_node(state: AgentState) -> AgentState:
     """Execute SQL tool: generate and execute SQL queries using LLM."""
-    emit_stream_event(state, "thinking", {"node": "sql", "status": "started", "message": "Calling SQL"})
+    emit_stream_event(state, "thinking", {"node": "sql", "status": "started", "message": "Querying database..."})
     start_time = time.time()
     router = state.get("router_decision")
     normalized = state.get("normalized_query")
@@ -134,9 +134,7 @@ def sql_node(state: AgentState) -> AgentState:
                 "node": "sql",
                 "status": "completed",
                 "message": "Query executed",
-                "sql": generated_sql,
             })
-            emit_stream_event(state, "sql", {"query": generated_sql})
         # Accumulate this run for summarizer (complete context across retries)
         sql_runs = state.get("sql_runs") or []
         sql_runs = list(sql_runs) + [{

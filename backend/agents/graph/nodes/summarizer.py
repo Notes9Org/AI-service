@@ -37,6 +37,15 @@ _CITATION_LINE_IN_ANSWER = re.compile(
 )
 
 
+def _emit_answer_tokens(stream_cb, answer: str, chunk_size: int = 12) -> None:
+    """Emit parsed answer text as clean token events for the client typewriter effect."""
+    for i in range(0, len(answer), chunk_size):
+        try:
+            stream_cb("token", {"text": answer[i : i + chunk_size]})
+        except Exception:
+            break
+
+
 def _strip_uuids_from_answer(text: str) -> str:
     """Remove UUIDs and citation lines (source_type (uuid):) from answer so end users never see them."""
     if not text or not isinstance(text, str):
@@ -230,26 +239,27 @@ def summarizer_node(state: AgentState) -> AgentState:
         }
         
         try:
-            # Use summary-specific model when configured (BEDROCK_CHAT_MODEL_ID_SUMMARY in .env) for faster/cheaper summarizer.
             model = getattr(llm_client, "chat_model_id_summary", None) or llm_client.default_deployment
             stream_cb = state.get("stream_callback")
             if stream_cb and callable(stream_cb) and hasattr(llm_client, "complete_text_stream"):
-                # Stream tokens when callback is set
                 content_parts = []
                 for token in llm_client.complete_text_stream(prompt, model=model, temperature=SUMMARIZER_TEMPERATURE):
                     content_parts.append(token)
-                    try:
-                        stream_cb("token", {"text": token})
-                    except Exception:
-                        pass
                 content = "".join(content_parts).strip()
                 if content.startswith("```"):
                     content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
                     content = re.sub(r"\s*```$", "", content)
                 content = content.strip()
                 result = parse_llm_json(content)
+
+                answer_text = result.get("answer", "")
+                if answer_text and callable(stream_cb):
+                    _emit_answer_tokens(stream_cb, answer_text)
             else:
                 result = llm_client.complete_json(prompt, schema, model=model, temperature=SUMMARIZER_TEMPERATURE)
+                answer_text = result.get("answer", "") if isinstance(result, dict) else ""
+                if answer_text and stream_cb and callable(stream_cb):
+                    _emit_answer_tokens(stream_cb, answer_text)
         except Exception as e:
             logger.error("Summarizer LLM call failed", error=str(e), run_id=run_id)
             state["summary"] = {"answer": SUMMARIZER_ERROR_MESSAGE, "citations": []}

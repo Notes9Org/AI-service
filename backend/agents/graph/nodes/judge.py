@@ -51,10 +51,7 @@ def judge_node(state: AgentState) -> AgentState:
         emit_stream_event(state, "thinking", {
             "node": "judge",
             "status": "completed",
-            "message": f"Validation: {judge_output['verdict']}",
-            "verdict": judge_output["verdict"],
-            "confidence": judge_output["confidence"],
-            "issues": judge_output.get("issues") or [],
+            "message": "Answer validated",
         })
                 
         # Log error event

@@ -107,7 +107,7 @@ def get_trace_service() -> TraceService:
 
 def rag_node(state: AgentState) -> AgentState:
     """Execute RAG tool: embed query and search semantic chunks."""
-    emit_stream_event(state, "thinking", {"node": "rag", "status": "started", "message": "Calling RAG"})
+    emit_stream_event(state, "thinking", {"node": "rag", "status": "started", "message": "Searching documents..."})
     start_time = time.time()
     router = state.get("router_decision")
     normalized = state.get("normalized_query")
@@ -437,20 +437,10 @@ def rag_node(state: AgentState) -> AgentState:
                            "output_top_similarity": round(max([c.get("similarity", 0.0) for c in final_chunks], default=0.0), 3) if final_chunks else 0.0})
         state["rag_result"] = rag_result
         # Emit RAG chunks to stream so client can display retrieved documents
-        stream_chunks = [
-            {
-                "source_type": c.get("source_type"),
-                "source_id": str(c.get("source_id", "")),
-                "chunk_id": c.get("chunk_id"),
-                "excerpt": (c.get("content") or "")[:400],
-                "relevance": round(float(c.get("similarity", 0)), 4),
-            }
-            for c in rag_result
-        ]
-        emit_stream_event(state, "rag_chunks", {
-            "message": f"Retrieved {len(rag_result)} document chunk(s)",
-            "count": len(rag_result),
-            "chunks": stream_chunks,
+        emit_stream_event(state, "thinking", {
+            "node": "rag",
+            "status": "completed",
+            "message": f"Retrieved {len(rag_result)} document(s)",
         })
         # Accumulate chunks for summarizer (complete context across retries)
         rag_chunks_all = state.get("rag_chunks_all") or []

@@ -31,102 +31,6 @@ def get_agent_graph():
     return _agent_graph
 
 
-@router.post("/run", response_model=FinalResponse)
-async def run_agent(
-    request: AgentRequest,
-    current_user: CurrentUser = Depends(get_current_user),
-) -> FinalResponse:
-    """Execute agent graph: normalize → router → tools → summarizer → judge → final."""
-    start_time = time.time()
-    run_id = str(uuid4())
-    trace_service = TraceService()
-    # user_id: always use authenticated user from JWT (ignore request.user_id to avoid client mismatch)
-    user_id = current_user.user_id
-    session_id = request.session_id
-    logger.info("agent_run started", run_id=run_id, query=request.query[:100], user_id=user_id, session_id=session_id)
-
-    try:
-        try:
-            trace_service.create_run(
-                run_id=run_id,
-                organization_id=None,
-                created_by=user_id,
-                session_id=request.session_id,
-                query=request.query,
-                project_id=None
-            )
-        except Exception as e:
-            logger.warning("Trace logging failed, continuing", error=str(e))
-        
-        initial_state: AgentState = {
-            "run_id": run_id,
-            "request": {
-                "query": request.query,
-                "user_id": user_id,
-                "session_id": session_id,
-                "scope": {},
-                "history": [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in request.history],
-                "options": request.options or {}
-            },
-            "normalized_query": None,
-            "router_decision": None,
-            "sql_result": None,
-            "rag_result": None,
-            "sql_runs": [],
-            "rag_chunks_all": [],
-            "summary": None,
-            "judge_result": None,
-            "retry_count": 0,
-            "attempted_tools": [],
-            "flags": None,
-            "retry_context": None,
-            "best_summary": None,
-            "best_judge_result": None,
-            "best_tool_used": None,
-            "final_response": None,
-            "run_process_log": [],
-            "run_citations": [],
-            "trace": []
-        }
-
-        graph = get_agent_graph()
-
-        def _invoke_graph():
-            return graph.invoke(initial_state)
-
-        final_state = await asyncio.to_thread(_invoke_graph)
-        final_response = final_state.get("final_response")
-
-        if not final_response:
-            from agents.constants import TOOL_RAG, CONFIDENCE_ERROR_OR_MISSING
-            final_response = FinalResponse(
-                answer="Agent execution completed but no response generated.",
-                citations=[],
-                confidence=CONFIDENCE_ERROR_OR_MISSING,
-                tool_used=TOOL_RAG
-            )
-
-        total_latency_ms = int((time.time() - start_time) * 1000)
-        trace_service.update_run_status(
-            run_id=run_id,
-            status="completed",
-            final_confidence=final_response.confidence,
-            tool_used=final_response.tool_used,
-            total_latency_ms=total_latency_ms
-        )
-
-        logger.info("agent_run completed", run_id=run_id, confidence=final_response.confidence)
-        return final_response
-
-    except HTTPException:
-        trace_service.update_run_status(run_id=run_id, status="failed", total_latency_ms=int((time.time() - start_time) * 1000))
-        raise
-    except Exception as e:
-        trace_service.update_run_status(run_id=run_id, status="failed", total_latency_ms=int((time.time() - start_time) * 1000))
-        logger.error("agent_run failed", run_id=run_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
-
-
 def _format_sse(event_type: str, data: dict) -> str:
     """Format a Server-Sent Event."""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -225,10 +129,6 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
                 yield _format_sse("thinking", data)
             elif event_type == "token":
                 yield _format_sse("token", data)
-            elif event_type == "sql":
-                yield _format_sse("sql", data)
-            elif event_type == "rag_chunks":
-                yield _format_sse("rag_chunks", data)
             elif event_type == "error":
                 yield _format_sse("error", data)
 

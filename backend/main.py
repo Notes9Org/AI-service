@@ -30,10 +30,13 @@ load_dotenv()
 # LangGraph: enable strict msgpack deserialization (CVE mitigation for checkpoint stores)
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
+_fallback_renderer = structlog.dev.ConsoleRenderer()
+
 def console_renderer(logger, name, event_dict):
-    """Console renderer for agent node events - shows every node transition (start + completed)."""
+    """Console renderer for agent node events - shows every node transition (start + completed).
+    Non-agent messages fall through to the standard console renderer so errors stay visible."""
     if "agent_node" not in event_dict:
-        return ""
+        return _fallback_renderer(logger, name, event_dict)
     if "error" in event_dict or "thinking_type" in event_dict:
         return ""
     event = (event_dict.get("event") or event_dict.get("message") or "")
@@ -126,16 +129,16 @@ if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
     app_config.log_format = "json"
 use_json = app_config.log_format == "json"
 
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        console_renderer if not use_json else structlog.processors.JSONRenderer()
-    ]
-)
+_processors = [
+    structlog.contextvars.merge_contextvars,
+    structlog.processors.TimeStamper(fmt="iso"),
+    structlog.processors.add_log_level,
+    structlog.processors.StackInfoRenderer(),
+]
+if use_json:
+    _processors.append(structlog.processors.format_exc_info)
+_processors.append(console_renderer if not use_json else structlog.processors.JSONRenderer())
+structlog.configure(processors=_processors)
 
 logger = structlog.get_logger()
 
@@ -285,14 +288,12 @@ async def root() -> Dict[str, Any]:
         "status": "operational",
         "endpoints": {
             "chat": {
-                "post": "POST /chat",
                 "stream": "POST /chat/stream",
-                "description": "Direct Claude/LLM chat. Send messages and optional system prompt; receive assistant reply. /stream returns SSE. Bearer token required.",
+                "description": "Direct Claude/LLM chat via SSE stream. Bearer token required.",
             },
             "notes9": {
-                "run": "POST /notes9/run",
                 "stream": "POST /notes9/stream",
-                "description": "Full agent pipeline (normalize → router → SQL/RAG → summarizer). Bearer token required.",
+                "description": "Full agent pipeline (normalize → router → SQL/RAG → summarizer) via SSE stream. Bearer token required.",
             },
             "AWS_transcribe": {
                 "createSession": "POST /AWS_transcribe",

@@ -172,8 +172,6 @@ def normalize_node(state: AgentState) -> AgentState:
             "node": "normalize",
             "status": "completed",
             "message": "Query understood",
-            "intent": normalized.intent,
-            "conclusion": f"Query classified as {normalized.intent} intent",
         })
         is_valid, validation_issues = _validate_normalized(normalized, request)
         if not is_valid:
