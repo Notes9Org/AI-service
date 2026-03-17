@@ -198,11 +198,13 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
         "status": "started",
         "message": "Generating response...",
     })
+    await asyncio.sleep(0)
     yield _format_sse("thinking", {
         "node": "browsing",
         "status": "started",
         "message": "Searching the web when needed...",
     })
+    await asyncio.sleep(0)
 
     task = asyncio.to_thread(run_stream)
 
@@ -227,8 +229,10 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
                                 final_content = data
                             elif event_type == "error":
                                 yield _format_sse("error", data)
+                                await asyncio.sleep(0)
                             else:
                                 yield _format_sse(event_type, data)
+                                await asyncio.sleep(0)
                         except Empty:
                             break
                     break
@@ -236,6 +240,7 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
                 if now - last_ping >= PING_INTERVAL_SEC:
                     last_ping = now
                     yield _format_sse("ping", {"ts": now})
+                    await asyncio.sleep(0)
                 continue
 
             if event_type == "stream_complete":
@@ -243,9 +248,11 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
                 break
             if event_type == "error":
                 yield _format_sse("error", data)
+                await asyncio.sleep(0)
                 break
 
             yield _format_sse(event_type, data)
+            await asyncio.sleep(0)
 
         await stream_task
 
@@ -255,15 +262,19 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
                 "status": "completed",
                 "message": "Search complete",
             })
+            await asyncio.sleep(0)
             yield _format_sse("thinking", {
                 "node": "chat",
                 "status": "completed",
                 "message": "Response complete",
             })
+            await asyncio.sleep(0)
             yield _format_sse("done", final_content)
+            await asyncio.sleep(0)
     except Exception as e:
         logger.error("chat_stream failed", error=str(e))
         yield _format_sse("error", {"error": str(e)})
+        await asyncio.sleep(0)
 
 
 @router.post("/stream", summary="Chat with Claude / LLM (SSE streaming)")

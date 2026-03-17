@@ -120,6 +120,7 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
                 if now - last_ping >= PING_INTERVAL_SEC:
                     last_ping = now
                     yield _format_sse("ping", {"ts": now})
+                    await asyncio.sleep(0)
                 continue
 
             if event_type == "done":
@@ -127,10 +128,13 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
 
             if event_type == "thinking":
                 yield _format_sse("thinking", data)
+                await asyncio.sleep(0)
             elif event_type == "token":
                 yield _format_sse("token", data)
+                await asyncio.sleep(0)
             elif event_type == "error":
                 yield _format_sse("error", data)
+                await asyncio.sleep(0)
 
         await graph_task
 
@@ -154,9 +158,11 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
         )
 
         yield _format_sse("done", final_response.model_dump())
+        await asyncio.sleep(0)
     except Exception as e:
         logger.error("agent_stream failed", run_id=run_id, error=str(e))
         yield _format_sse("error", {"error": str(e)})
+        await asyncio.sleep(0)
 
 
 @router.post("/stream")
