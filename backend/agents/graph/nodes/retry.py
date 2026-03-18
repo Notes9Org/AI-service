@@ -198,28 +198,22 @@ def retry_node(state: AgentState) -> AgentState:
     judge = state.get("judge_result")
     summary = state.get("summary")
 
-    # Use judge's suggested_revision directly when available — skip full pipeline re-run
+    # When judge fails: always keep summarizer output — never replace with suggested_revision.
+    # Mark as pass so we route to final with the summarizer's answer.
     if judge and judge.get("verdict") != VERDICT_PASS and summary:
-        suggested = judge.get("suggested_revision")
-        if suggested and isinstance(suggested, str) and suggested.strip():
-            # Use the improved answer; keep existing citations (they remain valid)
-            revised_answer = suggested.strip()
-            citations = summary.get("citations") or []
-            state["summary"] = {"answer": revised_answer, "citations": citations}
-            # Mark as pass so should_retry routes to final (no retry loop)
-            state["judge_result"] = {
-                **judge,
-                "verdict": VERDICT_PASS,
-                "confidence": min(judge.get("confidence", 0.5) + 0.1, 1.0),
-                "issues": [],
-                "suggested_revision": None,
-            }
-            logger.info(
-                "retry_node: using judge suggested_revision directly",
-                run_id=state.get("run_id"),
-                answer_length=len(revised_answer),
-            )
-            return state
+        state["judge_result"] = {
+            **judge,
+            "verdict": VERDICT_PASS,
+            "confidence": min(judge.get("confidence", 0.5) + 0.1, 1.0),
+            "issues": [],
+            "suggested_revision": None,
+        }
+        logger.info(
+            "retry_node: keeping summarizer answer (judge failed, no replacement)",
+            run_id=state.get("run_id"),
+            answer_length=len((summary.get("answer") or "")),
+        )
+        return state
 
     retry_count = state.get("retry_count", 0)
     request = state["request"]
