@@ -17,6 +17,8 @@ ENTITY_KEYS_FOR_SQL_FALLBACK = (
     "project_ids",
     "experiment_names",
     "project_names",
+    "lab_note_titles",
+    "protocol_names",
     "dates",
     "statuses",
     "person_names",
@@ -59,6 +61,9 @@ RAG_TOP_CHUNKS = 6
 RAG_TOP_CHUNKS_PER_ENTITY = 3
 RAG_MAX_ENTITIES_FOR_ID_FETCH = 10
 RAG_MAX_CHUNKS_PER_SECTION = 10
+# Deep fetch: when user asks to extract/pull/fetch content from a named document
+RAG_DEEP_FETCH_PER_ENTITY = 12   # Chunks per entity in deep fetch mode (vs 3 normal)
+RAG_DEEP_FETCH_TOP = 16          # Final chunks to keep in deep fetch mode (vs 6 normal)
 
 # --- Summarizer (keep prompt bounded so LLM can handle it) ---
 SUMMARIZER_TEMPERATURE = 0.3
@@ -69,6 +74,7 @@ SUMMARIZER_ANSWER_PREVIEW_LEN = 200
 # Caps to avoid context overflow and LLM errors (RetryError/LLMError)
 SUMMARIZER_SQL_MAX_ROWS = 50
 SUMMARIZER_SQL_MAX_CELL_LEN = 400
+SUMMARIZER_SQL_MAX_CELL_LEN_FULL_CONTENT = 15_000  # For full lab note content retrieval
 SUMMARIZER_RAG_MAX_CHUNKS = 16
 SUMMARIZER_PROMPT_MAX_CHARS = 120_000  # ~30k tokens; stay under typical 32k context
 

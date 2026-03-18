@@ -175,11 +175,26 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
         )
 
         if config.zep_enabled and final_response.answer:
+            # Enrich assistant content with entity metadata for future context
+            zep_assistant_content = final_response.answer
+            final_state = final_state_ref["value"]
+            if final_state:
+                normalized = final_state.get("normalized_query")
+                if normalized and hasattr(normalized, "entities") and isinstance(normalized.entities, dict):
+                    entity_tags = []
+                    for key in ("lab_note_titles", "project_names", "experiment_names", "protocol_names"):
+                        vals = normalized.entities.get(key)
+                        if vals and isinstance(vals, list):
+                            for v in vals[:3]:
+                                entity_tags.append(f"{key.replace('_', ' ').rstrip('s')}: {v}")
+                    if entity_tags:
+                        zep_assistant_content += f"\n\n[Referenced: {'; '.join(entity_tags)}]"
+
             await zep_add_messages(
                 session_id=session_id,
                 user_id=user_id,
                 user_content=request.query,
-                assistant_content=final_response.answer,
+                assistant_content=zep_assistant_content,
             )
 
         yield _format_sse("done", final_response.model_dump())
