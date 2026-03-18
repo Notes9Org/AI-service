@@ -8,13 +8,13 @@ Frontend integration guide for Biomni SSE streaming and WebSocket.
 
 **Endpoint:** `POST /biomni/stream`  
 **Headers:** `Authorization: Bearer <token>`, `Content-Type: application/json`  
-**Body:** `{ "query": "...", "session_id": "...", "history": [], "options": {} }` (or use `prompt` instead of `query`)
+**Body:** `{ "query": "...", "session_id": "...", "history": [], "options": {} }`
 
 ### Event Types
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `started` | `{ prompt, session_id, run_id }` | Task started |
+| `started` | `{ query, session_id, run_id }` | Task started |
 | `step` | `{ index, content }` | Intermediate execution step |
 | `clarify` | `{ needs_clarification, question, options }` | Agent asks for clarification |
 | `result` | `{ answer, steps, success, artifact_url, pdf_url, error? }` | Final result |
@@ -26,14 +26,12 @@ Frontend integration guide for Biomni SSE streaming and WebSocket.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `query` | string | Yes* | User query (same as agent/run) |
-| `prompt` | string | Yes* | Alias for query (backwards compat). Use query or prompt. |
-| `user_id` | string | No | **Ignored.** Always from Bearer token (auth). Do not send. |
+| `query` | string | Yes | User query to process |
 | `session_id` | string | No | Session ID for tracking |
 | `history` | array | No | Previous messages: `[{role, content}]` |
 | `options` | object | No | `skip_clarify`, `max_clarify_rounds`, `generate_pdf` |
 
-*Either `query` or `prompt` is required. `user_id` is always fetched from auth (JWT), never from request body.
+`user_id` is always derived from the Bearer token (JWT `sub`). It is not part of the request body.
 
 ### Example: Fetch with ReadableStream
 
@@ -80,7 +78,7 @@ async function streamBiomni(query, token) {
 import { useState, useCallback } from 'react';
 
 type BiomniEvent =
-  | { type: 'started'; prompt: string; run_id: string }
+  | { type: 'started'; query: string; run_id: string }
   | { type: 'step'; index: number; content: string }
   | { type: 'clarify'; question: string; options?: string[] }
   | { type: 'result'; answer: string; steps: string[]; success: boolean; pdf_url?: string }
@@ -140,7 +138,7 @@ export function useBiomniStream(token: string) {
 | Type | Payload | Description |
 |------|---------|-------------|
 | `auth` | `{ token }` | First message if not using query param |
-| `run` | `{ query, prompt?, session_id?, max_retries?, history?, options? }` | Execute task. Use `query` or `prompt` (aligned with agent/run). `user_id` from token. |
+| `run` | `{ query, session_id?, max_retries?, history?, options? }` | Execute task. `user_id` from token. |
 | `clarify_response` | `{ answer }` | Response to clarify (after receiving clarify) |
 | `ping` | `{}` | Keep-alive |
 
@@ -178,7 +176,7 @@ ws.onopen = () => {
 
 ## Clarifying Questions Flow
 
-1. User sends query (or prompt).
+1. User sends query.
 2. If agent needs clarification, you receive `clarify` (SSE) or `{"type": "clarify"}` (WS).
 3. **SSE:** Show the question in UI, user answers, make a new `/biomni/stream` request with `history: [{role: "assistant", content: question}, {role: "user", content: answer}]`.
 4. **WS:** Show the question, user answers, send `{"type": "clarify_response", "answer": "..."}` on the same connection. Agent continues automatically.

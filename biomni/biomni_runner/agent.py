@@ -56,6 +56,7 @@ class BioMniAgent:
                 "path": self._path,
                 "llm": self._llm,
                 "source": "Bedrock",
+                "commercial_use_allowed": True,
             }
             if not self._load_datalake:
                 agent_kwargs["expected_data_lake_files"] = []

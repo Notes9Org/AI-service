@@ -8,11 +8,17 @@ venv/
 env/
 ENV/
 .venv
+*.egg-info/
+.eggs/
 
-# Environment variables
+# Environment & secrets
 .env
 .env.local
 .env.*.local
+**/.env
+*.pem
+*.key
+secrets/
 
 # IDE
 .vscode/
@@ -35,20 +41,42 @@ Thumbs.db
 *.log
 logs/
 
-# Docker (backend/.dockerignore is committed for CI)
-.dockerignore
-!backend/.dockerignore
-
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.nox/
+
+# Type checking & linting
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
 
 # Distribution / packaging
 dist/
 build/
-*.egg-info/
-.eggs/
+*.egg
+
+# Node (if any frontend tooling)
+node_modules/
+
+# Docker (backend/.dockerignore is committed for CI)
+.dockerignore
+!backend/.dockerignore
 
 # Biomni datalake (Phase 1 local storage)
 data/
+
+# Temporary
+*.bak
+*.tmp
+*.temp

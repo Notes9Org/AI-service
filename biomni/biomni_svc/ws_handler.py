@@ -28,7 +28,7 @@ async def handle_biomni_websocket(
     Handle WebSocket connection for Biomni streaming.
 
     Auth: token from query param (?token=JWT) or first message {"type": "auth", "token": "..."}.
-    Client sends {"type": "run", "prompt": "...", "session_id": "..."}.
+    Client sends {"type": "run", "query": "...", "session_id": "..."}.
     Server sends: connected, started, step, result, done.
     """
     await websocket.accept()
@@ -79,15 +79,14 @@ async def handle_biomni_websocket(
 
         msg_type = msg.get("type")
         if msg_type == "run":
-            # Aligned with agent/run: accept query or prompt (query takes precedence)
-            prompt = (msg.get("query") or msg.get("prompt") or "").strip()
+            query = (msg.get("query") or "").strip()
             sess_id = msg.get("session_id") or session_id
             max_retries = msg.get("max_retries", 3)
             history: List[Dict[str, str]] = msg.get("history", [])
             skip_clarify = msg.get("options", {}).get("skip_clarify", False)
             max_clarify_rounds = msg.get("options", {}).get("max_clarify_rounds", 2)
-            if not prompt:
-                await _send(websocket, {"type": "error", "error": "Missing prompt"})
+            if not query:
+                await _send(websocket, {"type": "error", "error": "Missing query"})
                 continue
 
             run_id = str(uuid4())
@@ -95,7 +94,7 @@ async def handle_biomni_websocket(
 
             # Clarification check
             if not skip_clarify and len(history) < max_clarify_rounds:
-                clarify_result = await evaluate_clarification(prompt, history)
+                clarify_result = await evaluate_clarification(query, history)
                 if clarify_result.needs_clarification and clarify_result.question:
                     await _send(
                         websocket,
@@ -105,7 +104,6 @@ async def handle_biomni_websocket(
                             "options": clarify_result.options,
                         },
                     )
-                    # Wait for clarify_response (with timeout)
                     try:
                         clarify_data = await asyncio.wait_for(websocket.receive_text(), timeout=120.0)
                         clarify_msg = json.loads(clarify_data)
@@ -115,8 +113,7 @@ async def handle_biomni_websocket(
                                 {"role": "assistant", "content": clarify_result.question},
                                 {"role": "user", "content": answer},
                             ]
-                            prompt = f"{prompt}\n\nUser clarification: {answer}"
-                        # else: proceed with original prompt
+                            query = f"{query}\n\nUser clarification: {answer}"
                     except asyncio.TimeoutError:
                         await _send(websocket, {"type": "error", "error": "Clarification timeout"})
                         await _send(websocket, {"type": "done"})
@@ -124,7 +121,7 @@ async def handle_biomni_websocket(
 
             def _run() -> Dict[str, Any]:
                 return run_biomni_task(
-                    query=prompt,
+                    query=query,
                     user_id=user_id,
                     session_id=sess_id,
                     max_retries=max_retries,
@@ -148,7 +145,7 @@ async def handle_biomni_websocket(
                     result=outcome["result"],
                     session_id=sess_id,
                     user_id=user_id,
-                    metadata={"prompt": prompt[:500], "run_id": run_id},
+                    metadata={"query": query[:500], "run_id": run_id},
                 )
 
             await _send(

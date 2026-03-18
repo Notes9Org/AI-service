@@ -11,7 +11,7 @@ from typing import List, Optional
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from biomni_svc import run_biomni_task
 from biomni_svc.config import get_biomni_config
@@ -29,12 +29,7 @@ router = APIRouter(prefix="/biomni", tags=["biomni"])
 class _BiomniRequestBase(BaseModel):
     """Base request schema aligned with agent/run: query, session_id, history, options. user_id always from Bearer token."""
 
-    query: Optional[str] = Field(None, description="User query (same as agent/run). Use query or prompt.")
-    prompt: Optional[str] = Field(None, description="Natural language prompt (alias for query, backwards compat)")
-    user_id: Optional[str] = Field(
-        None,
-        description="Ignored. user_id is always from Bearer token (auth). Do not send; server uses JWT sub.",
-    )
+    query: str = Field(..., description="User query to process")
     session_id: Optional[str] = Field(None, description="Session ID for tracking and context (same as agent/run)")
     max_retries: int = Field(default=3, ge=0, le=10, description="Max retries on Bedrock throttling")
     history: List[dict] = Field(
@@ -45,16 +40,6 @@ class _BiomniRequestBase(BaseModel):
         None,
         description="skip_clarify, max_clarify_rounds, generate_pdf",
     )
-
-    @model_validator(mode="after")
-    def require_query_or_prompt(self):
-        if not self.query and not self.prompt:
-            raise ValueError("Either query or prompt is required")
-        return self
-
-    def get_prompt(self) -> str:
-        """Resolve effective prompt (query takes precedence, aligned with agent/run)."""
-        return (self.query or self.prompt or "").strip()
 
 
 class BiomniRunRequest(_BiomniRequestBase):
@@ -107,11 +92,11 @@ async def biomni_run(
 ) -> BiomniRunResponse:
     """
     Execute a biomedical research task via Biomni agent.
-    Requires Bearer token (Supabase Auth). user_id is always from auth (JWT sub), never from request body.
+    Requires Bearer token (Supabase Auth). user_id is derived from JWT sub.
     """
-    user_id = current_user.user_id  # Always from Bearer token; request.user_id is ignored
+    user_id = current_user.user_id
     session_id = request.session_id or ""
-    prompt = request.get_prompt()
+    query = request.query.strip()
     opts = request.options or {}
     skip_clarify = opts.get("skip_clarify", False)
     max_clarify_rounds = opts.get("max_clarify_rounds", 2)
@@ -121,7 +106,7 @@ async def biomni_run(
         if not skip_clarify and len(request.history) < max_clarify_rounds:
             from biomni_svc.clarify import evaluate_clarification
 
-            clarify_result = await evaluate_clarification(prompt, request.history)
+            clarify_result = await evaluate_clarification(query, request.history)
             if clarify_result.needs_clarification and clarify_result.question:
                 return BiomniRunResponse(
                     result="",
@@ -131,7 +116,7 @@ async def biomni_run(
                 )
 
         outcome = run_biomni_task(
-            query=prompt,
+            query=query,
             user_id=user_id,
             session_id=session_id,
             max_retries=request.max_retries,
@@ -143,23 +128,22 @@ async def biomni_run(
                 result=outcome["result"],
                 session_id=session_id,
                 user_id=user_id,
-                metadata={"prompt": prompt[:500]},
+                metadata={"query": query[:500]},
             )
             if opts.get("generate_pdf"):
                 pdf_url = generate_and_upload_run_pdf(
-                    prompt=prompt,
+                    query=query,
                     result=outcome["result"],
                     steps=outcome.get("steps", []),
                     session_id=session_id,
                     user_id=user_id,
                 )
         steps = [StepEntry(content=s) for s in outcome.get("steps", [])]
-        # Persist to session if session_id provided
         if session_id and outcome.get("success"):
             add_run(
                 session_id=session_id,
                 user_id=user_id,
-                prompt=prompt,
+                query=query,
                 result=outcome.get("result", ""),
                 steps=outcome.get("steps", []),
             )
@@ -191,13 +175,13 @@ async def biomni_stream(
     """
     Execute a biomedical task via Biomni with SSE streaming.
     Events: started, step, result, error, ping, done.
-    Requires Bearer token (Supabase Auth). user_id is always from auth, never from request body.
+    Requires Bearer token (Supabase Auth). user_id is derived from JWT sub.
     """
     opts = request.options or {}
     try:
         return StreamingResponse(
             stream_biomni_events(
-                prompt=request.get_prompt(),
+                query=request.query.strip(),
                 user_id=current_user.user_id,
                 session_id=request.session_id or "",
                 max_retries=request.max_retries,
@@ -227,7 +211,7 @@ async def biomni_websocket(websocket: WebSocket, token: str | None = None):
     """
     WebSocket endpoint for Biomni streaming.
     Connect with ?token=JWT or send {\"type\": \"auth\", \"token\": \"...\"} as first message.
-    Send {\"type\": \"run\", \"prompt\": \"...\", \"session_id\": \"...\"} to execute.
+    Send {\"type\": \"run\", \"query\": \"...\", \"session_id\": \"...\"} to execute.
     """
     await handle_biomni_websocket(websocket, token=token)
 

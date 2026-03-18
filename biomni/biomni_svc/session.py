@@ -52,7 +52,7 @@ def create_session(user_id: str, session_id: Optional[str] = None) -> Dict[str, 
 def add_run(
     session_id: str,
     user_id: str,
-    prompt: str,
+    query: str,
     result: str,
     steps: List[str],
     clarifications: Optional[List[dict]] = None,
@@ -65,7 +65,7 @@ def add_run(
         return None
     run_entry = {
         "id": str(uuid.uuid4()),
-        "prompt": prompt,
+        "query": query,
         "result": result,
         "steps": steps,
         "clarifications": clarifications or [],

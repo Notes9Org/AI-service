@@ -24,7 +24,7 @@ def _format_sse(event_type: str, data: dict) -> str:
 
 
 async def stream_biomni_events(
-    prompt: str,
+    query: str,
     user_id: str,
     session_id: str = "",
     max_retries: int = 3,
@@ -42,21 +42,20 @@ async def stream_biomni_events(
     run_id = str(uuid4())
     history = history or []
 
-    # Clarification check (unless skipped or already at max rounds)
     if not skip_clarify and len(history) < max_clarify_rounds:
-        clarify_result = await evaluate_clarification(prompt, history)
+        clarify_result = await evaluate_clarification(query, history)
         if clarify_result.needs_clarification and clarify_result.question:
-            yield _format_sse("started", {"prompt": prompt[:200], "session_id": session_id, "run_id": run_id})
+            yield _format_sse("started", {"query": query[:200], "session_id": session_id, "run_id": run_id})
             yield _format_sse("clarify", clarify_result.to_dict())
             yield _format_sse("done", {})
             return
 
-    yield _format_sse("started", {"prompt": prompt[:200], "session_id": session_id, "run_id": run_id})
+    yield _format_sse("started", {"query": query[:200], "session_id": session_id, "run_id": run_id})
 
     def _run() -> None:
         try:
             outcome = run_biomni_task(
-                query=prompt,
+                query=query,
                 user_id=user_id,
                 session_id=session_id,
                 max_retries=max_retries,
@@ -103,13 +102,13 @@ async def stream_biomni_events(
                         result=outcome["result"],
                         session_id=session_id,
                         user_id=user_id,
-                        metadata={"prompt": prompt[:500], "run_id": run_id},
+                        metadata={"query": query[:500], "run_id": run_id},
                     )
 
                 pdf_url = None
                 if generate_pdf and outcome.get("success") and outcome.get("result"):
                     pdf_url = generate_and_upload_run_pdf(
-                        prompt=prompt,
+                        query=query,
                         result=outcome["result"],
                         steps=steps,
                         session_id=session_id,

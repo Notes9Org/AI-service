@@ -19,7 +19,7 @@ PDF_HTML_TEMPLATE = """
         body {{ font-family: system-ui, -apple-system, sans-serif; margin: 2em; line-height: 1.5; }}
         h1 {{ font-size: 1.5em; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }}
         h2 {{ font-size: 1.2em; color: #555; margin-top: 1.5em; }}
-        .prompt {{ background: #f5f5f5; padding: 1em; border-radius: 4px; margin: 1em 0; }}
+        .query {{ background: #f5f5f5; padding: 1em; border-radius: 4px; margin: 1em 0; }}
         .steps {{ margin: 1em 0; }}
         .step {{ margin: 0.5em 0; padding: 0.5em; background: #fafafa; border-left: 3px solid #4a90d9; }}
         .result {{ white-space: pre-wrap; background: #f0f8ff; padding: 1em; border-radius: 4px; margin: 1em 0; }}
@@ -30,7 +30,7 @@ PDF_HTML_TEMPLATE = """
     <h1>Biomni Execution Report</h1>
     <p class="meta">Generated: {timestamp}</p>
     <h2>Query</h2>
-    <div class="prompt">{prompt_html}</div>
+    <div class="query">{query_html}</div>
     {steps_html}
     <h2>Result</h2>
     <div class="result">{result_html}</div>
@@ -45,7 +45,7 @@ def _escape_html(text: str) -> str:
 
 
 def generate_run_pdf(
-    prompt: str,
+    query: str,
     result: str,
     steps: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -58,7 +58,7 @@ def generate_run_pdf(
     steps = steps or []
     metadata = metadata or {}
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    prompt_html = _escape_html(prompt)
+    query_html = _escape_html(query)
     result_html = _escape_html(result)
 
     steps_html = ""
@@ -73,7 +73,7 @@ def generate_run_pdf(
 
     html_content = PDF_HTML_TEMPLATE.format(
         timestamp=timestamp,
-        prompt_html=prompt_html,
+        query_html=query_html,
         steps_html=steps_html,
         result_html=result_html,
         footer=footer,
@@ -102,7 +102,7 @@ def generate_run_pdf(
             story.append(Paragraph(f"Generated: {timestamp}", styles["Normal"]))
             story.append(Spacer(1, 0.25 * inch))
             story.append(Paragraph("Query", styles["Heading2"]))
-            story.append(Paragraph(_escape_html(prompt).replace("\n", "<br/>"), styles["Normal"]))
+            story.append(Paragraph(_escape_html(query).replace("\n", "<br/>"), styles["Normal"]))
             for i, s in enumerate(steps, 1):
                 story.append(Paragraph(f"<b>Step {i}:</b> {_escape_html(str(s)).replace(chr(10), '<br/>')}", styles["Normal"]))
             story.append(Paragraph("Result", styles["Heading2"]))
@@ -158,7 +158,7 @@ def upload_pdf_to_s3(
 
 
 def generate_and_upload_run_pdf(
-    prompt: str,
+    query: str,
     result: str,
     steps: Optional[List[str]] = None,
     session_id: str = "",
@@ -167,7 +167,7 @@ def generate_and_upload_run_pdf(
 ) -> Optional[str]:
     """Generate PDF and upload to S3. Returns S3 URL or None."""
     pdf_bytes = generate_run_pdf(
-        prompt=prompt,
+        query=query,
         result=result,
         steps=steps,
         metadata={"session_id": session_id, "run_id": run_id},
@@ -184,28 +184,27 @@ def generate_session_pdf(
     """
     Generate a PDF report for an entire session (multiple runs).
 
-    Each run should have: prompt, result, steps, timestamp.
+    Each run should have: query, result, steps, timestamp.
     """
     if not runs:
         return generate_run_pdf(
-            prompt="(No runs in session)",
+            query="(No runs in session)",
             result="",
             steps=[],
             metadata={"session_id": session_id},
         )
 
-    # Combine all runs into one report
     parts = []
     for i, run in enumerate(runs, 1):
-        prompt = run.get("prompt", "")
+        q = run.get("query") or run.get("prompt", "")
         result = run.get("result", "")
         steps = run.get("steps", [])
         ts = run.get("timestamp", "")
-        parts.append(f"--- Run {i} ({ts}) ---\nQuery: {prompt}\n\nSteps:\n" + "\n".join(f"  {s}" for s in steps) + f"\n\nResult:\n{result}\n")
-    combined_prompt = f"Session: {session_id} ({len(runs)} runs)"
+        parts.append(f"--- Run {i} ({ts}) ---\nQuery: {q}\n\nSteps:\n" + "\n".join(f"  {s}" for s in steps) + f"\n\nResult:\n{result}\n")
+    combined_query = f"Session: {session_id} ({len(runs)} runs)"
     combined_result = "\n\n".join(parts)
     return generate_run_pdf(
-        prompt=combined_prompt,
+        query=combined_query,
         result=combined_result,
         steps=[],
         metadata={"session_id": session_id},
