@@ -220,7 +220,7 @@ def rag_node(state: AgentState) -> AgentState:
         user_id = request.get("user_id", "") if isinstance(request, dict) else getattr(request, "user_id", "")
 
         if not user_id:
-            logger.error("RAG search: user_id missing", run_id=run_id)
+            logger.error("RAG search: user_id required for data isolation, returning empty", run_id=run_id)
             state["rag_result"] = []
             _lat = int((time.time() - start_time) * 1000)
             logger.info("rag_node completed", agent_node="rag", run_id=run_id,

@@ -2,15 +2,26 @@
 
 Generate a single PostgreSQL SELECT query for the given natural-language question against a lab management database.
 
+## CRITICAL: User Data Isolation
+
+**Only return data belonging to the authenticated user.** Every query MUST filter by `{user_id}`. If a table cannot be filtered by user ownership, do NOT query it. Return empty result rather than exposing other users' data. This is non-negotiable.
+
 ## Constraints
 
 1. **Read-only.** SELECT only — no DDL, no DML.
-2. **Row-level security.** Every queried table MUST include `WHERE created_by = '{user_id}'::uuid` (or `generated_by` for reports). This is non-negotiable.
+2. **Row-level security (mandatory).** Every queried table MUST include a user filter:
+   - projects, experiments, lab_notes, samples, protocols, literature_reviews, assays: `created_by = '{user_id}'::uuid`
+   - reports: `generated_by = '{user_id}'::uuid`
+   - experiment_data: `uploaded_by = '{user_id}'::uuid`
+   - dashboard_tasks, equipment_usage: `user_id = '{user_id}'::uuid`
+   - quality_control, equipment_maintenance: `performed_by = '{user_id}'::uuid`
+   - equipment (no created_by): JOIN profiles pr ON pr.id = '{user_id}'::uuid WHERE eq.organization_id = pr.organization_id
 3. **UUID casting.** Use `::uuid` for all UUID literals.
-4. **Aliases.** p = projects, e = experiments, s = samples, pr = profiles.
-5. **Name matching.** Use `REPLACE(LOWER(col), '_', ' ') ILIKE '%' || REPLACE(LOWER('term'), '_', ' ') || '%'` to handle underscores and case.
-6. **IDs for summaries.** When returning projects or experiments, always include `p.id AS project_id` / `e.id AS experiment_id` so downstream enrichment can use them.
-7. **No comments** inside the SQL output.
+4. **Aliases.** p = projects, e = experiments, s = samples, ln = lab_notes, pr = profiles, pt = protocols.
+5. **Name matching.** Use `REPLACE(LOWER(col), '_', ' ') ILIKE '%' || REPLACE(LOWER('term'), '_', ' ') || '%'` for titles/names.
+6. **IDs for summaries.** When returning projects or experiments, include `p.id AS project_id` / `e.id AS experiment_id` for downstream RAG.
+7. **Lab notes by title.** When filtering lab_notes by title, use: `REPLACE(LOWER(ln.title), '_', ' ') ILIKE '%' || REPLACE(LOWER('Day 1 updates'), '_', ' ') || '%'`
+8. **No comments** inside the SQL output.
 
 ## Input
 

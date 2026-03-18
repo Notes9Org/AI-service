@@ -98,9 +98,9 @@ def sql_node(state: AgentState) -> AgentState:
         user_id = request.get("user_id", "") if isinstance(request, dict) else getattr(request, "user_id", "")
         
         if not user_id:
-            logger.error("SQL generation: user_id missing", run_id=run_id)
+            logger.error("SQL generation: user_id required for data isolation", run_id=run_id)
             state["sql_result"] = {
-                "data": [], "row_count": 0, "error": "user_id is required", "execution_time_ms": 0
+                "data": [], "row_count": 0, "error": "user_id required for data isolation", "execution_time_ms": 0
             }
             return state
         

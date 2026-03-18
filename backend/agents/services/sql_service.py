@@ -173,6 +173,20 @@ class SQLService:
                     names = ", ".join([str(v)[:50] for v in vals[:5]])
                     col = "e.name" if "experiment" in key else "p.name"
                     entity_filters.append(f"Filter by {key} ({names}): use REPLACE(LOWER({col}), '_', ' ') ILIKE '%'||REPLACE(LOWER('<name>'), '_', ' ')||'%'")
+            protocol_names = entities.get("protocol_names")
+            if protocol_names and isinstance(protocol_names, list):
+                names = ", ".join([str(n)[:80] for n in protocol_names[:5]])
+                entity_filters.append(
+                    f"Filter protocols by name ({names}): use protocols table with "
+                    "REPLACE(LOWER(protocols.name), '_', ' ') ILIKE '%'||REPLACE(LOWER('<name>'), '_', ' ')||'%'"
+                )
+            lab_note_titles = entities.get("lab_note_titles")
+            if lab_note_titles and isinstance(lab_note_titles, list):
+                titles = ", ".join([str(t)[:80] for t in lab_note_titles[:5]])
+                entity_filters.append(
+                    f"Filter lab_notes by title ({titles}): use lab_notes table with "
+                    "REPLACE(LOWER(lab_notes.title), '_', ' ') ILIKE '%'||REPLACE(LOWER('<title>'), '_', ' ')||'%'"
+                )
             if entities.get("person_names"):
                 entity_filters.append("Filter by person: JOIN profiles pr ON e.created_by=pr.id, use CONCAT(pr.first_name,' ',pr.last_name) ILIKE '%name%'")
 
@@ -209,6 +223,13 @@ class SQLService:
             # Remove trailing semicolon if present (we'll add it if needed)
             if sql.endswith(';'):
                 sql = sql[:-1]
+            
+            # SECURITY: Reject SQL that does not filter by user_id — never return other users' data
+            if user_id and user_id not in sql:
+                logger.error("SQL rejected: missing user_id filter", user_id_preview=user_id[:8] + "...")
+                raise ValueError(
+                    "Generated SQL does not filter by user_id. Refusing to execute — users must only see their own data."
+                )
             
             logger.info("SQL generated", query_length=len(sql), sql_preview=sql[:100], sql_full=sql)
             

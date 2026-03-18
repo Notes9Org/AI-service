@@ -186,6 +186,23 @@ DB_SCHEMA = """
 - last_edited_at (timestamptz, default: now())
 - metadata (jsonb, default: '{}')
 
+### lab_note_protocols
+- id (uuid, PK, default: uuid_generate_v4())
+- lab_note_id (uuid, FK -> lab_notes.id, NOT NULL)
+- protocol_id (uuid, FK -> protocols.id, NOT NULL)
+- added_at (timestamptz, NOT NULL, default: now())
+
+### dashboard_tasks
+- id (uuid, PK, default: uuid_generate_v4())
+- user_id (uuid, FK -> profiles.id, NOT NULL)
+- title (text, NOT NULL)
+- due_at (timestamptz, optional)
+- priority (text, NOT NULL, default: 'medium', CHECK: 'low', 'medium', 'high')
+- completed (boolean, NOT NULL, default: false)
+- completed_at (timestamptz, optional)
+- created_at (timestamptz, NOT NULL, default: now())
+- updated_at (timestamptz, NOT NULL, default: now())
+
 ### literature_reviews
 - id (uuid, PK, default: uuid_generate_v4())
 - organization_id (uuid, FK -> organizations.id, optional)
@@ -343,60 +360,67 @@ DB_SCHEMA = """
 10. projects -> reports (1:N, optional)
 11. experiments -> samples (1:N, optional)
 12. experiments -> lab_notes (1:N, optional)
-13. experiments -> experiment_protocols (N:M with protocols)
-14. experiments -> experiment_assays (N:M with assays)
-15. experiments -> equipment_usage (N:M with equipment)
-16. experiments -> experiment_data (1:N)
-17. experiments -> quality_control (1:N)
-18. experiments -> reports (1:N, optional)
-19. profiles -> experiments (via created_by, assigned_to)
-20. profiles -> projects (via created_by)
-21. profiles -> samples (via created_by)
-22. profiles -> lab_notes (via created_by)
-23. profiles -> equipment_usage (via user_id)
-24. profiles -> equipment_maintenance (via performed_by)
-25. profiles -> chat_sessions (1:N)
-26. profiles -> message_votes (1:N)
-27. profiles -> chunk_jobs (via created_by)
-28. profiles -> audit_log (via user_id)
+13. lab_notes -> lab_note_protocols (N:M with protocols)
+14. experiments -> experiment_protocols (N:M with protocols)
+15. experiments -> experiment_assays (N:M with assays)
+16. experiments -> equipment_usage (N:M with equipment)
+17. experiments -> experiment_data (1:N)
+18. experiments -> quality_control (1:N)
+19. experiments -> reports (1:N, optional)
+20. profiles -> experiments (via created_by, assigned_to)
+21. profiles -> projects (via created_by)
+22. profiles -> samples (via created_by)
+23. profiles -> lab_notes (via created_by)
+24. profiles -> equipment_usage (via user_id)
+25. profiles -> equipment_maintenance (via performed_by)
+26. profiles -> dashboard_tasks (via user_id)
+27. profiles -> chat_sessions (1:N)
+28. profiles -> message_votes (1:N)
+29. profiles -> chunk_jobs (via created_by)
+30. profiles -> audit_log (via user_id)
 
-## Access Control Notes
+## Row-Level Security (RLS) — MANDATORY
 
-- All queries MUST filter by organization_id (from scope) for security
-- Optionally filter by project_id (from scope)
-- Optionally filter by experiment_id (from scope)
-- Use JOINs to access organization_id through relationships:
-  - experiments -> projects -> organizations
-  - samples -> experiments -> projects -> organizations
-  - lab_notes -> experiments -> projects -> organizations OR lab_notes -> projects -> organizations
-  - equipment_usage -> experiments -> projects -> organizations
-  - experiment_data -> experiments -> projects -> organizations
-  - quality_control -> experiments -> projects -> organizations
+**Users must only see their own data.** Every query MUST filter by user ownership. If a table cannot be filtered by user, do NOT query it.
+
+**User-scoped tables** (filter by created_by, user_id, or generated_by = user_id):
+- projects, experiments, samples, lab_notes, protocols, reports, literature_reviews, assays: created_by
+- reports: generated_by
+- experiment_data: uploaded_by
+- quality_control, equipment_maintenance: performed_by
+- equipment_usage: user_id
+- dashboard_tasks: user_id
+
+**Organization-scoped** (filter via user's org or project membership):
+- equipment, assays: organization_id — JOIN profiles pr ON pr.id = '{user_id}'::uuid, filter organization_id = pr.organization_id
+- Or restrict via project_members: JOIN project_members pm ON pm.user_id = '{user_id}'::uuid AND pm.project_id = p.id
+
+**Junction tables** (inherit from parent): lab_note_protocols, experiment_protocols, experiment_assays — join through parent that has RLS.
 
 ## Common Query Patterns
 
-### Get experiments for a person (created_by):
-SELECT e.* FROM experiments e
-JOIN projects p ON e.project_id = p.id
-WHERE p.organization_id = '<org_id>'
-  AND e.created_by = '<person_id>'
+### Lab notes by title (user-scoped):
+SELECT ln.*, e.name AS experiment_name, p.name AS project_name
+FROM lab_notes ln
+LEFT JOIN experiments e ON ln.experiment_id = e.id
+LEFT JOIN projects p ON ln.project_id = p.id OR (e.project_id = p.id AND ln.experiment_id IS NOT NULL)
+WHERE ln.created_by = '{user_id}'::uuid
+  AND REPLACE(LOWER(ln.title), '_', ' ') ILIKE '%' || REPLACE(LOWER('Day 1 updates'), '_', ' ') || '%'
 
-### Get experiments assigned to a person:
-SELECT e.* FROM experiments e
-JOIN projects p ON e.project_id = p.id
-WHERE p.organization_id = '<org_id>'
-  AND e.assigned_to = '<person_id>'
+### Projects and experiments for user:
+SELECT p.id AS project_id, p.name, e.id AS experiment_id, e.name AS experiment_name
+FROM projects p
+LEFT JOIN experiments e ON e.project_id = p.id AND e.created_by = '{user_id}'::uuid
+WHERE p.created_by = '{user_id}'::uuid
+ORDER BY p.created_at DESC, e.created_at DESC
 
-### Get all experiments for an organization:
-SELECT e.* FROM experiments e
-JOIN projects p ON e.project_id = p.id
-WHERE p.organization_id = '<org_id>'
+### Protocols by name:
+SELECT pt.* FROM protocols pt
+WHERE pt.created_by = '{user_id}'::uuid
+  AND REPLACE(LOWER(pt.name), '_', ' ') ILIKE '%' || REPLACE(LOWER('PCR'), '_', ' ') || '%'
 
-### Get samples for an organization:
-SELECT s.* FROM samples s
-JOIN experiments e ON s.experiment_id = e.id
-JOIN projects p ON e.project_id = p.id
-WHERE p.organization_id = '<org_id>'
+### Dashboard tasks for user:
+SELECT * FROM dashboard_tasks WHERE user_id = '{user_id}'::uuid ORDER BY due_at NULLS LAST
 """
 
 
