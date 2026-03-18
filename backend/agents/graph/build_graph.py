@@ -184,9 +184,19 @@ def build_agent_graph() -> StateGraph:
     
     # RAG → summarizer, or (if rag_weak) SQL fallback
     def route_after_rag(state: AgentState) -> str:
-        """After RAG: if rag_weak and SQL not tried yet and has entities → sql; else summarizer."""
+        """After RAG: if rag_weak and SQL not tried yet and has entities → sql; else summarizer.
+        Avoid infinite loop: if we already ran SQL (from prior RAG-weak fallback), go to summarizer."""
         flags = state.get("flags") or {}
         if not flags.get("rag_weak"):
+            return "summarizer"
+        # Already tried SQL fallback? Don't loop — go to summarizer with what we have
+        sql_runs = state.get("sql_runs") or []
+        sql_result = state.get("sql_result")
+        has_sql_data = (
+            (sql_result and not sql_result.get("error") and (sql_result.get("row_count", 0) or 0) > 0)
+            or (len(sql_runs) > 0 and any(not r.get("error") and (r.get("row_count", 0) or 0) > 0 for r in sql_runs if isinstance(r, dict)))
+        )
+        if has_sql_data:
             return "summarizer"
         router = state.get("router_decision")
         tools = router.tools if router and hasattr(router, "tools") else (router.get("tools", []) if isinstance(router, dict) else [])

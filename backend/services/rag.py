@@ -116,6 +116,7 @@ class RAGService:
         project_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
+        source_ids: Optional[List[str]] = None,
         match_threshold: float = 0.75,
         match_count: int = 6,
         apply_threshold: bool = True,
@@ -138,6 +139,8 @@ class RAGService:
             conditions.append("experiment_id = %s")
         if source_types:
             conditions.append("source_type = ANY(%s)")
+        if source_ids:
+            conditions.append("source_id = ANY(%s::uuid[])")
 
         where_sql = " AND ".join(conditions)
         threshold_sql = " AND (1 - (embedding <=> %s)) >= %s" if apply_threshold else ""
@@ -163,6 +166,8 @@ class RAGService:
             params_for_sql.append(experiment_id)
         if source_types:
             params_for_sql.append(source_types)
+        if source_ids:
+            params_for_sql.append(source_ids)
         if apply_threshold:
             params_for_sql.extend([query_vec, match_threshold])
         params_for_sql.extend([query_vec, limit_val])  # ORDER BY, LIMIT
@@ -212,6 +217,7 @@ class RAGService:
         project_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
+        source_ids: Optional[List[str]] = None,
         match_threshold: float = 0.75,
         match_count: int = 6,
         return_below_threshold_for_entity: bool = False,
@@ -234,13 +240,14 @@ class RAGService:
                     project_id=project_id,
                     experiment_id=experiment_id,
                     source_types=source_types,
+                    source_ids=source_ids,
                     match_threshold=match_threshold,
                     match_count=match_count,
                     apply_threshold=True,
                 )
                 if (
                     return_below_threshold_for_entity
-                    and (project_id or experiment_id)
+                    and (project_id or experiment_id or source_ids)
                     and len(results) == 0
                 ):
                     results = self._search_chunks_pgvector(
@@ -250,6 +257,7 @@ class RAGService:
                         project_id=project_id,
                         experiment_id=experiment_id,
                         source_types=source_types,
+                        source_ids=source_ids,
                         match_threshold=match_threshold,
                         match_count=match_count,
                         apply_threshold=False,
@@ -277,6 +285,7 @@ class RAGService:
             project_id=project_id,
             experiment_id=experiment_id,
             source_types=source_types,
+            source_ids=source_ids,
             match_threshold=match_threshold,
             match_count=match_count,
             return_below_threshold_for_entity=return_below_threshold_for_entity,
@@ -290,6 +299,7 @@ class RAGService:
         project_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
+        source_ids: Optional[List[str]] = None,
         match_threshold: float = 0.75,
         match_count: int = 6,
         return_below_threshold_for_entity: bool = False,
@@ -306,6 +316,8 @@ class RAGService:
                 query = query.eq("experiment_id", experiment_id)
             if source_types:
                 query = query.in_("source_type", source_types)
+            if source_ids:
+                query = query.in_("source_id", source_ids)
 
             response = query.limit(1000).execute()
             chunks = response.data if response.data else []
@@ -338,7 +350,7 @@ class RAGService:
 
             if (
                 return_below_threshold_for_entity
-                and (project_id or experiment_id)
+                and (project_id or experiment_id or source_ids)
                 and len(chunks) > 0
                 and len(results) == 0
             ):
@@ -386,6 +398,7 @@ class RAGService:
         project_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
+        source_ids: Optional[List[str]] = None,
         vector_weight: float = 0.7,
         text_weight: float = 0.3,
         match_threshold: float = 0.5,
@@ -407,6 +420,8 @@ class RAGService:
             conditions.append("experiment_id = %s")
         if source_types:
             conditions.append("source_type = ANY(%s)")
+        if source_ids:
+            conditions.append("source_id = ANY(%s::uuid[])")
 
         where_sql = " AND ".join(conditions)
         # ts_rank: normalize by dividing by max possible (1.0) - ts_rank can be > 1, we clamp
@@ -436,6 +451,8 @@ class RAGService:
             params_for_sql.append(experiment_id)
         if source_types:
             params_for_sql.append(source_types)
+        if source_ids:
+            params_for_sql.append(source_ids)
         # SELECT combined_score needs (vector_weight, text_weight),
         # WHERE clause needs them again plus match_threshold, then LIMIT
         params_for_sql.extend([
@@ -489,6 +506,7 @@ class RAGService:
         project_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
+        source_ids: Optional[List[str]] = None,
         vector_weight: float = 0.7,
         text_weight: float = 0.3,
         match_threshold: float = 0.5,
@@ -512,6 +530,7 @@ class RAGService:
                     project_id=project_id,
                     experiment_id=experiment_id,
                     source_types=source_types,
+                    source_ids=source_ids,
                     vector_weight=vector_weight,
                     text_weight=text_weight,
                     match_threshold=match_threshold,
@@ -530,6 +549,7 @@ class RAGService:
             project_id=project_id,
             experiment_id=experiment_id,
             source_types=source_types,
+            source_ids=source_ids,
             vector_weight=vector_weight,
             text_weight=text_weight,
             match_threshold=match_threshold,
@@ -545,6 +565,7 @@ class RAGService:
         project_id: Optional[str] = None,
         experiment_id: Optional[str] = None,
         source_types: Optional[List[str]] = None,
+        source_ids: Optional[List[str]] = None,
         vector_weight: float = 0.7,
         text_weight: float = 0.3,
         match_threshold: float = 0.5,
@@ -562,6 +583,8 @@ class RAGService:
                 query = query.eq("experiment_id", experiment_id)
             if source_types:
                 query = query.in_("source_type", source_types)
+            if source_ids:
+                query = query.in_("source_id", source_ids)
 
             response = query.limit(1000).execute()
             chunks = response.data if response.data else []

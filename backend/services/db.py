@@ -216,3 +216,41 @@ class SupabaseService:
                 for sid in ids:
                     out[(st, str(sid))] = st.replace("_", " ").title()
         return out
+
+    def get_lab_note_ids_by_titles(
+        self, user_id: str, titles: List[str]
+    ) -> List[str]:
+        """
+        Resolve lab note titles to IDs for the given user.
+        Uses case-insensitive partial match (ILIKE) to handle variations.
+        Returns list of unique lab note UUIDs.
+        """
+        if not user_id or not titles:
+            return []
+        seen: set = set()
+        ids: List[str] = []
+        for t in titles[:10]:  # Limit to avoid excessive queries
+            if not t or not str(t).strip():
+                continue
+            title_clean = str(t).strip().replace("_", " ")
+            try:
+                r = (
+                    self.client.table("lab_notes")
+                    .select("id")
+                    .eq("created_by", user_id)
+                    .ilike("title", f"%{title_clean}%")
+                    .limit(5)
+                    .execute()
+                )
+                for row in (r.data or []):
+                    sid = str(row.get("id", "")).strip()
+                    if sid and sid not in seen:
+                        seen.add(sid)
+                        ids.append(sid)
+            except Exception as e:
+                logger.warning(
+                    "get_lab_note_ids_by_titles failed for title",
+                    title=t[:50],
+                    error=str(e),
+                )
+        return ids

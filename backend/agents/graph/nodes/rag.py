@@ -9,6 +9,7 @@ from services.rag import RAGService
 from services.embedder import EmbeddingService
 from services.trace_service import TraceService
 from services.config import get_app_config
+from services.db import SupabaseService
 from agents.constants import (
     TOOL_RAG,
     RAG_WEAK_MIN_AVG_CONTENT_LEN,
@@ -64,6 +65,26 @@ def _entity_ids_from_sql_state(state: AgentState) -> Tuple[List[str], List[str]]
         project_ids[:RAG_MAX_ENTITIES_FOR_ID_FETCH],
         experiment_ids[:RAG_MAX_ENTITIES_FOR_ID_FETCH],
     )
+
+
+def _lab_note_ids_from_entities(state: AgentState, user_id: str) -> List[str]:
+    """Resolve lab_note_titles from entities to lab note IDs for RAG scoping."""
+    normalized = state.get("normalized_query")
+    if not normalized or not user_id:
+        return []
+    entities = getattr(normalized, "entities", {}) or {}
+    if not isinstance(entities, dict):
+        return []
+    titles = entities.get("lab_note_titles")
+    if not titles or not isinstance(titles, list):
+        return []
+    try:
+        db = SupabaseService()
+        return db.get_lab_note_ids_by_titles(user_id, [str(t) for t in titles[:5]])
+    except Exception as e:
+        logger.warning("Failed to resolve lab_note_titles to IDs", error=str(e))
+        return []
+
 
 # Get similarity threshold from config
 _app_config = None
@@ -233,7 +254,30 @@ def rag_node(state: AgentState) -> AgentState:
         app_config = get_app_config()
         match_threshold = _get_rag_threshold()
         project_ids, experiment_ids = _entity_ids_from_sql_state(state)
+        lab_note_ids = _lab_note_ids_from_entities(state, user_id)
+        if lab_note_ids:
+            entities = getattr(normalized, "entities", {}) or {}
+            logger.info(
+                "RAG lab note scoping",
+                run_id=run_id,
+                lab_note_titles=entities.get("lab_note_titles", [])[:3],
+                lab_note_ids_count=len(lab_note_ids),
+            )
         id_filtered_chunks: List[Dict[str, Any]] = []
+        if lab_note_ids:
+            for ln_id in lab_note_ids[:RAG_MAX_ENTITIES_FOR_ID_FETCH]:
+                try:
+                    chunks = rag_service.search_chunks(
+                        query_embedding=query_embedding,
+                        user_id=user_id,
+                        source_ids=[ln_id],
+                        match_threshold=match_threshold,
+                        match_count=RAG_TOP_CHUNKS_PER_ENTITY,
+                        return_below_threshold_for_entity=True,
+                    )
+                    id_filtered_chunks.extend(chunks)
+                except Exception as e:
+                    logger.warning("RAG lab note fetch failed", lab_note_id=ln_id[:8], error=str(e), run_id=run_id)
         if experiment_ids or project_ids:
             def _fetch_entity(entity_type: str, entity_id: str) -> List[Dict[str, Any]]:
                 try:
@@ -276,6 +320,7 @@ def rag_node(state: AgentState) -> AgentState:
         query_pairs: List[Tuple[str, List[float]]] = [(normalized.normalized_query, query_embedding)]
 
         chunks_semantic: List[Dict[str, Any]] = []
+        source_ids_for_search = lab_note_ids if lab_note_ids else None
         for q_text, q_embedding in query_pairs:
             if use_hybrid:
                 try:
@@ -286,6 +331,7 @@ def rag_node(state: AgentState) -> AgentState:
                         organization_id=None,
                         project_id=None,
                         experiment_id=None,
+                        source_ids=source_ids_for_search,
                         match_threshold=match_threshold,
                         match_count=global_match_count,
                         vector_weight=getattr(app_config, "rag_hybrid_vector_weight", 0.7),
@@ -310,8 +356,10 @@ def rag_node(state: AgentState) -> AgentState:
                     organization_id=None,
                     project_id=None,
                     experiment_id=None,
+                    source_ids=source_ids_for_search,
                     match_threshold=match_threshold,
                     match_count=global_match_count,
+                    return_below_threshold_for_entity=bool(source_ids_for_search),
                 )
                 chunks_semantic.extend(res)
             except Exception as e:

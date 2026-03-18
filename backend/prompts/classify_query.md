@@ -26,7 +26,7 @@ Default to **in-scope**. The bar for rejection is very high.
 
 Extract into `entities` when relevant:
 
-- `lab_note_titles`: ["Day 1 updates"] — when user names a specific lab note by title
+- `lab_note_titles`: ["Day 1 updates"] — when user names a specific lab note by title, or when the user asks about a concept in a follow-up and history shows they were discussing a specific lab note (e.g. "Day 1 updates", "my notes on X")
 - `protocol_names`: ["PCR Protocol"] — when user asks about a specific protocol by name
 - `experiment_names`, `project_names` — when user mentions experiments/projects by name
 - `experiment_ids`, `project_ids` — when UUIDs are in context (e.g. from prior results)
