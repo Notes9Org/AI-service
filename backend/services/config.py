@@ -374,6 +374,11 @@ class AppConfig:
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "1000"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "200"))
         
+        # Zep memory (long-term + short-term context for Chat and Notes9)
+        self.zep_enabled = os.getenv("ZEP_ENABLED", "true").lower() in ("true", "1", "yes")
+        self.zep_enabled = self.zep_enabled and bool((os.getenv("ZEP_API_KEY") or "").strip())
+        self.web_search_max_uses = int(os.getenv("WEB_SEARCH_MAX_USES", "2"))
+
         # RAG / retrieval tuning (backend side)
         # Whether to use hybrid (vector + FTS) search where available; default off for safety
         self.rag_use_hybrid = os.getenv("RAG_USE_HYBRID", "false").lower() in ("true", "1", "yes")

@@ -6,6 +6,7 @@ Both require Bearer token (Supabase Auth).
 """
 import asyncio
 import json
+import os
 import time
 from queue import Empty, Queue
 from typing import List
@@ -16,54 +17,39 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import structlog
 
+from agents.prompt_loader import load_prompt
 from agents.services.anthropic_client import AnthropicChatClient
 from agents.services.llm_client import LLMError
 from services.auth import CurrentUser, get_current_user
+from services.config import get_app_config
+from services.zep_memory import get_context as zep_get_context
+from services.zep_memory import add_messages as zep_add_messages
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-DEFAULT_SYSTEM_PROMPT = """You are Catalyst, an AI research assistant for Notes9 - a scientific lab documentation platform.
-You help scientists with their experiments, protocols, and research documentation.
+# Keywords that suggest the query needs current/external info (web search)
+_WEB_SEARCH_KEYWORDS = (
+    "current", "latest", "recent", "today", "now", "breaking", "news",
+    "search the web", "look up", "find online", "search for", "look it up",
+    "stock", "price", "weather", "scores", "headlines", "happening",
+    "2024", "2025", "2026","this year", "right now", "up to date", "recently",
+)
 
-Your capabilities:
-- Answer questions about experiments and protocols
-- Help with chemistry and biochemistry calculations
-- Assist with scientific writing and documentation
-- Explain complex scientific concepts
+# Override: set WEB_SEARCH_ALWAYS=true to always enable; WEB_SEARCH_NEVER=true to never
+def _should_use_web_search(content: str) -> bool:
+    """True only when the query likely needs current/external information."""
+    if os.getenv("WEB_SEARCH_NEVER", "").lower() in ("true", "1", "yes"):
+        return False
+    if os.getenv("WEB_SEARCH_ALWAYS", "").lower() in ("true", "1", "yes"):
+        return True
+    q = (content or "").lower().strip()
+    if len(q) < 3:
+        return False
+    return any(kw in q for kw in _WEB_SEARCH_KEYWORDS)
 
-Guidelines:
-- Use proper scientific terminology
-- Format chemical formulas correctly (H₂O, CO₂, CH₃COOH, etc.)
-- Be precise and accurate with scientific information
-- When unsure, acknowledge limitations
-- Keep responses clear and helpful
 
-Response formatting (critical for UI display):
-1. Never start with filler phrases like "Certainly!", "Sure!", "Of course!", "I'd be happy to", or "Great question!". Start directly with the answer.
-2. Numbered list items must always be on a single line: "Number. Topic — explanation". Example: "1. Lung Cancer — Smoking is the leading cause." Use an em dash (—) after the topic. Never put the topic on one line and the explanation on the next.
-3. Bullet points are allowed but must be flat. Never nest bullets or sub-bullets under other bullets or numbered items.
-4. Headings are allowed. Use them to structure longer responses. Keep heading text short and descriptive.
-5. Bold and italic are allowed for emphasis but use sparingly. Do not bold entire sentences or paragraphs.
-6. Never add excessive blank lines between list items. One single line break between each item only.
-7. Keep responses conversational and direct. Avoid sounding like a formal document or academic report unless asked.
-8. If the answer is simple, respond in plain prose. Only use lists and headings when the content genuinely needs structure.
-9. Never repeat the user's question back to them before answering.
-10. End naturally. Do not add closings like "I hope this helps!" or "Let me know if you need anything else!"
-11. When referring to documents or sources, use descriptive names or labels (e.g. "the lab note", "the protocol"). Never include IDs, UUIDs, or technical references like "source_id" in the response.
-
-Additional behavior guidelines:
-- Prefer concise, directly actionable answers; avoid rambling or unnecessary explanation.
-- Use web search tools only when the question depends on current or external information; otherwise answer from your own knowledge.
-- When you do use the web, integrate results into a single coherent answer instead of listing raw links.
-- If information is uncertain or conflicting online, say so explicitly and state your best-judgment answer.
-
-Citation format (when using web search):
-- When citing a web source, use numbered inline citations [1], [2], [3] immediately after the cited claim or phrase.
-- Example: "Medicines for Malaria Venture (MMV), [1] announced a new combination therapy..."
-- Each number corresponds to a source that will be displayed as a clickable link. Use [1] for the first source, [2] for the second, etc.
-- Place the citation marker right after the phrase or sentence it supports.
-"""
+_CHAT_SYSTEM_PROMPT = load_prompt("chat", "chat_system")
 
 
 class ChatMessage(BaseModel):
@@ -108,17 +94,29 @@ async def chat(
     """
     user_id = current_user.user_id
     session_id = request.session_id
+    use_web = _should_use_web_search(request.content)
     logger.info(
         "chat_request",
         user_id=user_id,
         session_id=session_id,
         content_len=len(request.content),
         history_len=len(request.history),
+        use_web=use_web,
     )
 
-    messages = [{"role": m.role, "content": m.content} for m in request.history] + [
-        {"role": "user", "content": request.content}
-    ]
+    # Build messages and system from Zep or fallback to request.history
+    config = get_app_config()
+    if config.zep_enabled:
+        zep_context, recent_messages = await zep_get_context(session_id, user_id)
+        messages = recent_messages + [{"role": "user", "content": request.content}]
+        system = _CHAT_SYSTEM_PROMPT
+        if zep_context and zep_context.strip():
+            system = f"{_CHAT_SYSTEM_PROMPT}\n\n[Relevant context from past conversations]\n{zep_context}"
+    else:
+        messages = [{"role": m.role, "content": m.content} for m in request.history] + [
+            {"role": "user", "content": request.content}
+        ]
+        system = _CHAT_SYSTEM_PROMPT
 
     try:
         client = AnthropicChatClient()
@@ -126,9 +124,16 @@ async def chat(
         result = await asyncio.to_thread(
             client.chat,
             messages=messages,
-            system=DEFAULT_SYSTEM_PROMPT,
-            use_web=True,
+            system=system,
+            use_web=use_web,
         )
+        if config.zep_enabled and result.get("content"):
+            await zep_add_messages(
+                session_id=session_id,
+                user_id=user_id,
+                user_content=request.content,
+                assistant_content=result["content"],
+            )
         return JSONResponse(status_code=200, content=result)
     except LLMError as e:
         logger.error("chat_failed_llm", error=str(e))
@@ -152,19 +157,31 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
     """
     user_id = current_user.user_id
     session_id = request.session_id
+    use_web = _should_use_web_search(request.content)
     logger.info(
         "chat_stream_request",
         user_id=user_id,
         session_id=session_id,
         content_len=len(request.content),
         history_len=len(request.history),
+        use_web=use_web,
     )
 
-    messages = [{"role": m.role, "content": m.content} for m in request.history] + [
-        {"role": "user", "content": request.content}
-    ]
+    # Build messages and system from Zep or fallback to request.history
+    config = get_app_config()
+    if config.zep_enabled:
+        zep_context, recent_messages = await zep_get_context(session_id, user_id)
+        messages = recent_messages + [{"role": "user", "content": request.content}]
+        system = _CHAT_SYSTEM_PROMPT
+        if zep_context and zep_context.strip():
+            system = f"{_CHAT_SYSTEM_PROMPT}\n\n[Relevant context from past conversations]\n{zep_context}"
+    else:
+        messages = [{"role": m.role, "content": m.content} for m in request.history] + [
+            {"role": "user", "content": request.content}
+        ]
+        system = _CHAT_SYSTEM_PROMPT
+
     queue: Queue = Queue()
-    use_web = True
 
     def run_stream():
         try:
@@ -173,7 +190,7 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
             sources: list[dict] = []
             for item in client.chat_stream(
                 messages=messages,
-                system=DEFAULT_SYSTEM_PROMPT,
+                system=system,
                 use_web=use_web,
             ):
                 if item.get("type") == "token":
@@ -260,6 +277,13 @@ async def _stream_chat_generator(request: ChatRequest, current_user: CurrentUser
         await stream_task
 
         if final_content:
+            if config.zep_enabled and final_content.get("content"):
+                await zep_add_messages(
+                    session_id=session_id,
+                    user_id=user_id,
+                    user_content=request.content,
+                    assistant_content=final_content["content"],
+                )
             yield _format_sse("thinking", {
                 "node": "browsing",
                 "status": "completed",

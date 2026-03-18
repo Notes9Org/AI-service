@@ -112,10 +112,15 @@ def normalize_node(state: AgentState) -> AgentState:
         if not history_text:
             history_text = "None"
 
+        zep_context = request.get("zep_context", "") if isinstance(request, dict) else getattr(request, "zep_context", "") or ""
+        if not zep_context or not str(zep_context).strip():
+            zep_context = "None"
+
         prompt_template = load_prompt("normalize", "classify_query")
         prompt = prompt_template.format(
             query_text=query_text,
             history_text=history_text,
+            zep_context=zep_context,
         )
 
         llm_client = get_llm_client()

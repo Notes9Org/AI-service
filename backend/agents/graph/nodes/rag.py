@@ -165,7 +165,10 @@ def rag_node(state: AgentState) -> AgentState:
         
         # Generate query embedding with error handling (base query)
         try:
+            _t0 = time.time()
             query_embedding = embedding_service.embed_text(normalized.normalized_query)
+            _embed_ms = int((time.time() - _t0) * 1000)
+            logger.info("RAG embedding completed", run_id=run_id, latency_ms=_embed_ms)
             
             if not query_embedding or len(query_embedding) == 0:
                 logger.error("RAG search: empty embedding generated", run_id=run_id)
@@ -226,6 +229,7 @@ def rag_node(state: AgentState) -> AgentState:
                                 "output_chunks_found": 0, "output_error": "user_id missing"})
             return state
 
+        _t_search = time.time()
         app_config = get_app_config()
         match_threshold = _get_rag_threshold()
         project_ids, experiment_ids = _entity_ids_from_sql_state(state)
@@ -253,12 +257,14 @@ def rag_node(state: AgentState) -> AgentState:
                     id_filtered_chunks.extend(fut.result())
 
             if id_filtered_chunks:
+                _id_ms = int((time.time() - _t_search) * 1000)
                 logger.info(
                     "RAG UUID-filtered fetch",
                     run_id=run_id,
                     experiment_ids=len(experiment_ids),
                     project_ids=len(project_ids),
                     id_chunks=len(id_filtered_chunks),
+                    latency_ms=_id_ms,
                 )
 
         # Global semantic search: optionally use hybrid search and fetch more raw candidates,
@@ -310,6 +316,9 @@ def rag_node(state: AgentState) -> AgentState:
                 chunks_semantic.extend(res)
             except Exception as e:
                 logger.warning("Vector RAG search failed for query", run_id=run_id, error=str(e))
+
+        _search_ms = int((time.time() - _t_search) * 1000)
+        logger.info("RAG search phase completed", run_id=run_id, latency_ms=_search_ms)
 
         # Merge ID-filtered and global chunks, dedup by chunk id
         seen_chunk_ids: Set[str] = set()

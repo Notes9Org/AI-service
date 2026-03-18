@@ -47,7 +47,8 @@ def _emit_answer_tokens(stream_cb, answer: str, chunk_size: int = 12) -> None:
 
 
 def _strip_uuids_from_answer(text: str) -> str:
-    """Remove UUIDs and citation lines (source_type (uuid):) from answer so end users never see them."""
+    """Remove UUIDs and citation lines (source_type (uuid):) from answer so end users never see them.
+    Preserves newlines and structure (tables, bullets, comparisons) - only strips UUIDs."""
     if not text or not isinstance(text, str):
         return text
     # Remove patterns like "[1] lab_note (72a5ffeb-...):" from the answer (LLM sometimes copies this)
@@ -56,7 +57,9 @@ def _strip_uuids_from_answer(text: str) -> str:
     s = _UUID_PATTERN.sub("", s)
     # Clean " (): " left after UUID removal so we don't show empty parens
     s = re.sub(r"\s*\(\s*\)\s*:\s*", " ", s)
-    return " ".join(s.split())
+    # Collapse multiple horizontal spaces only; preserve newlines so tables/bullets stay formatted
+    s = re.sub(r"[ \t]+", " ", s)
+    return s.strip()
 
 
 def _safe_str(value: Any, max_len: int = 0) -> str:

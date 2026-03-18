@@ -35,6 +35,9 @@ User Query: {query_text}
 Conversation History:
 {history_text}
 
+User background/context (from past conversations):
+{zep_context}
+
 ## Output
 
 Return ONLY valid JSON:

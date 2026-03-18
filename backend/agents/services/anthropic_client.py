@@ -71,7 +71,10 @@ class AnthropicChatClient:
             "messages": anthropic_messages,
         }
         if use_web:
-            kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
+            max_uses = int(os.getenv("WEB_SEARCH_MAX_USES", "2"))
+            kwargs["tools"] = [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_uses}
+            ]
             kwargs["tool_choice"] = {"type": "auto"}
 
         try:
@@ -138,10 +141,12 @@ class AnthropicChatClient:
                 "messages": anthropic_messages,
             }
             if use_web:
+                max_uses = int(os.getenv("WEB_SEARCH_MAX_USES", "2"))
                 kwargs["tools"] = [
                     {
                         "type": "web_search_20250305",
                         "name": "web_search",
+                        "max_uses": max_uses,
                     }
                 ]
                 kwargs["tool_choice"] = {"type": "auto"}

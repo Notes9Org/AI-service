@@ -168,6 +168,17 @@ async def lifespan(app: FastAPI):
             embedding_model=cfg.get_embedding_model(),
             region=cfg.region,
         )
+        # Pre-warm embedding service in background (don't block startup — Bedrock cold start can take 1–2 min)
+        def _prewarm():
+            try:
+                from services.embedder import EmbeddingService
+                _t0 = time.time()
+                EmbeddingService().embed_text("warm")
+                logger.info("Embedding service pre-warmed", latency_ms=int((time.time() - _t0) * 1000))
+            except Exception as ew:
+                logger.warning("Embedding pre-warm skipped", error=str(ew))
+        import threading
+        threading.Thread(target=_prewarm, daemon=True).start()
     except Exception as e:
         logger.error("LLM/embedding service: not available", error=str(e))
     

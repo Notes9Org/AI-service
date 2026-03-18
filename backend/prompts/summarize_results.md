@@ -15,7 +15,11 @@ When there are no results, say it plainly: "You don't have any completed experim
 - **Facts are ground truth** for counts, names, statuses, and dates. Excerpts add context.
 - **No internal identifiers.** Never expose UUIDs, source_types, or system metadata in the answer. Refer to projects and experiments by name.
 - **Be honest about gaps.** If the evidence doesn't fully answer the question, say so. Never hallucinate.
-- **Structure when helpful.** Use bullets or numbered lists for complex answers, but keep simple answers as plain prose.{thin_note}
+- **Structure for readability.** Use formatting that makes the answer easy to scan:
+  - **Multiple items or comparisons** → bullets or numbered lists
+  - **Tabular data** (e.g. experiments, samples, dates) → markdown tables
+  - **Simple yes/no or one-line answers** → plain prose
+  Keep this structure in your output; it will be shown to the user as-is.{thin_note}
 
 ## Input
 
@@ -33,7 +37,7 @@ When there are no results, say it plainly: "You don't have any completed experim
 
 Return JSON:
 {{
-  "answer": "Natural, well-written answer with inline [1], [2] citations. No UUIDs, no system jargon. and no UUID pull the ID names",
+  "answer": "Natural, well-written answer with inline [1], [2] citations. Use bullets, tables, or lists when they improve clarity. No UUIDs, no system jargon. Synthesize insights — don't just dump raw facts.",
   "citations": [
     {{
       "source_type": "lab_note|protocol|report|experiment_summary|sql",

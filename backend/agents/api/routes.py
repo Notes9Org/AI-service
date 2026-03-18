@@ -13,7 +13,10 @@ from agents.contracts.response import FinalResponse
 from agents.graph.state import AgentState
 from agents.graph.build_graph import build_agent_graph
 from services.auth import CurrentUser, get_current_user
+from services.config import get_app_config
 from services.trace_service import TraceService
+from services.zep_memory import get_context as zep_get_context
+from services.zep_memory import add_messages as zep_add_messages
 
 logger = structlog.get_logger()
 
@@ -42,6 +45,16 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
     run_id = str(uuid4())
     trace_service = TraceService()
     user_id = current_user.user_id
+    session_id = request.session_id
+
+    # Build history and zep_context from Zep or fallback to request.history
+    config = get_app_config()
+    if config.zep_enabled:
+        zep_context, recent_messages = await zep_get_context(session_id, user_id)
+        history = [{"role": m["role"], "content": m["content"]} for m in recent_messages]
+    else:
+        zep_context = ""
+        history = [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in request.history]
 
     def stream_callback(event_type: str, data: dict):
         queue.put((event_type, data))
@@ -51,9 +64,10 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
         "request": {
             "query": request.query,
             "user_id": user_id,
-            "session_id": request.session_id,
+            "session_id": session_id,
             "scope": {},
-            "history": [msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in request.history],
+            "history": history,
+            "zep_context": zep_context,
             "options": request.options or {}
         },
         "normalized_query": None,
@@ -159,6 +173,14 @@ async def _stream_agent_generator(request: AgentRequest, current_user: CurrentUs
             final_confidence=final_response.confidence,
             tool_used=final_response.tool_used,
         )
+
+        if config.zep_enabled and final_response.answer:
+            await zep_add_messages(
+                session_id=session_id,
+                user_id=user_id,
+                user_content=request.query,
+                assistant_content=final_response.answer,
+            )
 
         yield _format_sse("done", final_response.model_dump())
         await asyncio.sleep(0)

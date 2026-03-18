@@ -44,3 +44,7 @@ structlog==23.2.0
 
 # Anthropic (Claude API)
 anthropic>=0.85.0
+
+# Zep memory (long-term + short-term context for Chat and Notes9 agent)
+# Uses thread API (sessions deprecated on Zep Cloud)
+zep-cloud>=3.0.0
