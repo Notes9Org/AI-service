@@ -3,6 +3,9 @@
 # No VPC required - user creates new Lambda for this.
 # AWS Transcribe: Lambda must have IAM permissions (transcribe:StartStreamTranscriptionWebSocket
 # or lambda:InvokeFunction) and env vars: AWS_TRANSCRIBE_SERVICE_URL or AWS_TRANSCRIBE_LAMBDA_FUNCTION_NAME.
+#
+# Timeout: Lambda is set to 900s (max). In Lambda, agent defaults to faster mode (judge off, 1 retry,
+# anchor expansion off) to reduce FUNCTION_INVOCATION_TIMEOUT. Override with AGENT_JUDGE_ENABLED=true etc.
 name: Deploy Internal
 
 on:

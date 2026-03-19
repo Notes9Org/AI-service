@@ -21,6 +21,7 @@ ENV/
 secrets/
 
 # IDE
+.claude/
 .vscode/
 .cursor/
 .idea/
