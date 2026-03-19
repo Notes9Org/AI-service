@@ -18,6 +18,8 @@ from agents.constants import (
     RAG_TOP_CHUNKS_PER_ENTITY,
     RAG_MAX_ENTITIES_FOR_ID_FETCH,
     RAG_MAX_CHUNKS_PER_SECTION,
+    RAG_DEEP_FETCH_PER_ENTITY,
+    RAG_DEEP_FETCH_TOP,
 )
 from agents.services.thinking_logger import get_thinking_logger
 
@@ -263,6 +265,25 @@ def rag_node(state: AgentState) -> AgentState:
                 lab_note_titles=entities.get("lab_note_titles", [])[:3],
                 lab_note_ids_count=len(lab_note_ids),
             )
+        # Deep fetch: when user asks to extract/pull/fetch content from a named document,
+        # pull more chunks per entity for richer context
+        _nq_lower = (normalized.normalized_query or "").lower()
+        is_extraction_request = (
+            normalized.intent == "aggregate"
+            or (
+                normalized.intent in ("search", "hybrid", "detail")
+                and any(kw in _nq_lower for kw in ("pull out", "fetch", "extract", "show me", "get my", "retrieve"))
+            )
+        )
+        chunks_per_note = RAG_DEEP_FETCH_PER_ENTITY if (is_extraction_request and lab_note_ids) else RAG_TOP_CHUNKS_PER_ENTITY
+        if is_extraction_request and lab_note_ids:
+            logger.info(
+                "RAG deep fetch mode activated",
+                run_id=run_id,
+                chunks_per_note=chunks_per_note,
+                lab_note_ids_count=len(lab_note_ids),
+            )
+
         id_filtered_chunks: List[Dict[str, Any]] = []
         if lab_note_ids:
             for ln_id in lab_note_ids[:RAG_MAX_ENTITIES_FOR_ID_FETCH]:
@@ -272,7 +293,7 @@ def rag_node(state: AgentState) -> AgentState:
                         user_id=user_id,
                         source_ids=[ln_id],
                         match_threshold=match_threshold,
-                        match_count=RAG_TOP_CHUNKS_PER_ENTITY,
+                        match_count=chunks_per_note,
                         return_below_threshold_for_entity=True,
                     )
                     id_filtered_chunks.extend(chunks)
@@ -429,7 +450,8 @@ def rag_node(state: AgentState) -> AgentState:
                     deduplicated.append(c)
 
         deduplicated.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
-        final_chunks = deduplicated[:RAG_TOP_CHUNKS]
+        effective_top_chunks = RAG_DEEP_FETCH_TOP if is_extraction_request else RAG_TOP_CHUNKS
+        final_chunks = deduplicated[:effective_top_chunks]
 
         # Trace retrieval coverage if tracing is enabled
         if run_id:

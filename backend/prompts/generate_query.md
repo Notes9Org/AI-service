@@ -21,7 +21,8 @@ Generate a single PostgreSQL SELECT query for the given natural-language questio
 5. **Name matching.** Use `REPLACE(LOWER(col), '_', ' ') ILIKE '%' || REPLACE(LOWER('term'), '_', ' ') || '%'` for titles/names.
 6. **IDs for summaries.** When returning projects or experiments, include `p.id AS project_id` / `e.id AS experiment_id` for downstream RAG.
 7. **Lab notes by title.** When filtering lab_notes by title, use: `REPLACE(LOWER(ln.title), '_', ' ') ILIKE '%' || REPLACE(LOWER('Day 1 updates'), '_', ' ') || '%'`
-8. **No comments** inside the SQL output.
+8. **Full content for lab notes.** When `lab_note_titles` is in the entities, always SELECT `ln.content` (full text) along with `ln.title`, `ln.id`, `ln.created_at`, and join experiment/project names. The user wants the complete document content.
+9. **No comments** inside the SQL output.
 
 ## Input
 

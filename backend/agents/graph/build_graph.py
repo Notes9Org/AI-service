@@ -198,11 +198,26 @@ def build_agent_graph() -> StateGraph:
         )
         if has_sql_data:
             return "summarizer"
+        # Named document + rag_weak → fetch full content via SQL (fast path)
+        normalized = state.get("normalized_query")
+        entities = getattr(normalized, "entities", {}) if normalized else {}
+        if isinstance(entities, dict) and (entities.get("lab_note_titles") or entities.get("protocol_names")):
+            # Upgrade intent to aggregate so SQL fetches full content
+            if normalized and normalized.intent == "search":
+                try:
+                    copy_fn = getattr(normalized, "model_copy", None) or getattr(normalized, "copy", None)
+                    if copy_fn:
+                        state["normalized_query"] = copy_fn(update={
+                            "intent": "aggregate",
+                            "context": {**(normalized.context or {}), "requires_aggregation": True},
+                        })
+                except Exception:
+                    pass
+            return "sql"
+        # General entity fallback
         router = state.get("router_decision")
         tools = router.tools if router and hasattr(router, "tools") else (router.get("tools", []) if isinstance(router, dict) else [])
         if TOOL_SQL not in tools:
-            normalized = state.get("normalized_query")
-            entities = getattr(normalized, "entities", {}) if normalized else {}
             if isinstance(entities, dict) and any(entities.get(k) for k in ENTITY_KEYS_FOR_SQL_FALLBACK):
                 return "sql"
         return "summarizer"

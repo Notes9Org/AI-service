@@ -198,22 +198,39 @@ def retry_node(state: AgentState) -> AgentState:
     judge = state.get("judge_result")
     summary = state.get("summary")
 
-    # When judge fails: always keep summarizer output — never replace with suggested_revision.
-    # Mark as pass so we route to final with the summarizer's answer.
+    # When judge fails: only force-pass if retries are exhausted (graceful degradation).
+    # Otherwise fall through to normal retry logic so the system actually retries.
     if judge and judge.get("verdict") != VERDICT_PASS and summary:
-        state["judge_result"] = {
-            **judge,
-            "verdict": VERDICT_PASS,
-            "confidence": min(judge.get("confidence", 0.5) + 0.1, 1.0),
-            "issues": [],
-            "suggested_revision": None,
-        }
+        retry_count = state.get("retry_count", 0)
+        request = state["request"]
+        options = request.get("options", {}) if isinstance(request, dict) else getattr(request, "options", {}) if hasattr(request, "options") else {}
+        app_cfg = get_app_config()
+        default_max = getattr(app_cfg, "agent_max_retries", DEFAULT_MAX_RETRIES)
+        _max_retries = options.get("max_retries", default_max) if isinstance(options, dict) else getattr(options, "max_retries", default_max)
+
+        if retry_count >= _max_retries:
+            # Exhausted retries — keep summarizer answer (best we have)
+            state["judge_result"] = {
+                **judge,
+                "verdict": VERDICT_PASS,
+                "confidence": min(judge.get("confidence", 0.5) + 0.1, 1.0),
+                "issues": [],
+                "suggested_revision": None,
+            }
+            logger.info(
+                "retry_node: keeping summarizer answer (judge failed, retries exhausted)",
+                run_id=state.get("run_id"),
+                answer_length=len((summary.get("answer") or "")),
+                retry_count=retry_count,
+            )
+            return state
+        # Otherwise: fall through to normal retry logic below (don't force-pass)
         logger.info(
-            "retry_node: keeping summarizer answer (judge failed, no replacement)",
+            "retry_node: judge failed, will retry with different tool",
             run_id=state.get("run_id"),
-            answer_length=len((summary.get("answer") or "")),
+            retry_count=retry_count,
+            judge_verdict=judge.get("verdict"),
         )
-        return state
 
     retry_count = state.get("retry_count", 0)
     request = state["request"]

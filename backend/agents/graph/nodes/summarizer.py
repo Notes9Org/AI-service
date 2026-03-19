@@ -18,6 +18,7 @@ from agents.constants import (
     SUMMARIZER_ANSWER_PREVIEW_LEN,
     SUMMARIZER_SQL_MAX_ROWS,
     SUMMARIZER_SQL_MAX_CELL_LEN,
+    SUMMARIZER_SQL_MAX_CELL_LEN_FULL_CONTENT,
     SUMMARIZER_RAG_MAX_CHUNKS,
     SUMMARIZER_PROMPT_MAX_CHARS,
 )
@@ -161,16 +162,29 @@ def summarizer_node(state: AgentState) -> AgentState:
         original_query = _safe_str(normalized.normalized_query if normalized else query_text, 2000)
         history_summary = _safe_str(getattr(normalized, "history_summary", None) if normalized else None, 500)
 
+        # Detect full-content request: user asked for a specific document by name via aggregate intent
+        is_full_content_request = (
+            normalized
+            and normalized.intent == "aggregate"
+            and isinstance(normalized.entities, dict)
+            and (normalized.entities.get("lab_note_titles") or normalized.entities.get("protocol_names"))
+        )
+        effective_cell_len = (
+            SUMMARIZER_SQL_MAX_CELL_LEN_FULL_CONTENT
+            if is_full_content_request
+            else SUMMARIZER_SQL_MAX_CELL_LEN
+        )
+
         if sql_runs:
             facts_from_db = _merged_sql_facts_from_runs(
-                sql_runs, SUMMARIZER_SQL_MAX_ROWS, SUMMARIZER_SQL_MAX_CELL_LEN
+                sql_runs, SUMMARIZER_SQL_MAX_ROWS, effective_cell_len
             )
         else:
             facts_from_db = "None available."
             if sql_result and isinstance(sql_result, dict):
                 if sql_result.get("data") and not sql_result.get("error"):
                     facts_from_db = _sql_result_to_summary_facts(
-                        sql_result, SUMMARIZER_SQL_MAX_ROWS, SUMMARIZER_SQL_MAX_CELL_LEN
+                        sql_result, SUMMARIZER_SQL_MAX_ROWS, effective_cell_len
                     )
                 elif sql_result.get("error"):
                     facts_from_db = f"Error: {_safe_str(sql_result.get('error', 'Unknown error'), 500)}"
@@ -444,6 +458,24 @@ def _sql_result_to_summary_facts(
                 continue
             label = k.replace("_", " ").title()
             parts.append(f"{label}: {_safe_str(v, max_cell_len)}")
+        # If 'content' column is empty but 'editor_data' exists, extract text from TipTap JSON
+        if not any(p.startswith("Content:") for p in parts):
+            editor_data = row.get("editor_data")
+            if editor_data and isinstance(editor_data, (dict, str)):
+                if isinstance(editor_data, str):
+                    try:
+                        import json as _json
+                        editor_data = _json.loads(editor_data)
+                    except (ValueError, TypeError):
+                        editor_data = None
+                if isinstance(editor_data, dict) and "type" in editor_data:
+                    try:
+                        from worker.services.chunker import extract_from_tiptap
+                        extracted = extract_from_tiptap(editor_data)
+                        if extracted:
+                            parts.append(f"Content: {_safe_str(extracted, max_cell_len)}")
+                    except Exception:
+                        pass
         if parts:
             lines.append(f"  {i}. " + "; ".join(parts))
     if not lines:
