@@ -29,3 +29,6 @@ langchain-aws==0.2.35
 langchain-openai>=0.2.0
 reportlab>=4.0.0
 pandas>=2.0.0
+
+# Anthropic (for web search tool: advanced_web_search_claude)
+anthropic>=0.85.0

@@ -1,8 +1,9 @@
 """
 Biomni biomedical AI agent endpoints.
 
-POST /biomni/run    - Run a biomedical task (auth, S3 upload, steps).
-POST /biomni/stream - SSE streaming of Biomni execution.
+POST /biomni/run    - Run a biomedical task (auth, S3 upload, steps, images).
+POST /biomni/stream - SSE streaming of Biomni execution (real-time steps + images).
+GET  /biomni/config - Get current agent configuration.
 GET  /biomni/health - Lightweight check that the agent can be initialized.
 """
 
@@ -38,7 +39,7 @@ class _BiomniRequestBase(BaseModel):
     )
     options: Optional[dict] = Field(
         None,
-        description="skip_clarify, max_clarify_rounds, generate_pdf",
+        description="skip_clarify, max_clarify_rounds, generate_pdf, commercial_mode",
     )
 
 
@@ -74,6 +75,10 @@ class BiomniRunResponse(BaseModel):
     )
     pdf_url: Optional[str] = Field(
         None, description="S3 URL of PDF report when generate_pdf was requested"
+    )
+    images: List[str] = Field(
+        default_factory=list,
+        description="Base64 PNG data URIs of generated plots, chemical structures, and visualizations",
     )
 
 
@@ -154,6 +159,7 @@ async def biomni_run(
             steps=steps,
             artifact_url=artifact_url,
             pdf_url=pdf_url,
+            images=outcome.get("images", []),
         )
     except RuntimeError as e:
         if "not installed" in str(e).lower():
@@ -173,8 +179,8 @@ async def biomni_stream(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Execute a biomedical task via Biomni with SSE streaming.
-    Events: started, step, result, error, ping, done.
+    Execute a biomedical task via Biomni with SSE streaming (native go_stream).
+    Events: started, step, image, clarify, result, error, ping, done.
     Requires Bearer token (Supabase Auth). user_id is derived from JWT sub.
     """
     opts = request.options or {}
@@ -276,6 +282,24 @@ async def biomni_mcp_health(
     from biomni_svc.mcp import test_mcp_connection
 
     return test_mcp_connection()
+
+
+@router.get("/config", summary="Get BiomNI agent configuration")
+async def biomni_config(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get current agent configuration. Requires auth."""
+    cfg = get_biomni_config()
+    return {
+        "llm_model": cfg.llm,
+        "source": cfg.source,
+        "commercial_mode": cfg.commercial_mode,
+        "timeout_seconds": cfg.timeout_seconds,
+        "temperature": cfg.temperature,
+        "data_path": cfg.path,
+        "skip_datalake": cfg.skip_datalake,
+        "web_search_enabled": bool(cfg.anthropic_api_key),
+    }
 
 
 @router.get("/health", response_model=BioMniHealthResponse, summary="Biomni agent health check")

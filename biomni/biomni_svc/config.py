@@ -87,3 +87,5 @@ class BiomniConfig:
         self.source = os.getenv("BIOMNI_SOURCE", "Bedrock")
         self.region = os.getenv("AWS_REGION", "us-east-1")
         self.skip_datalake = os.getenv("BIOMNI_SKIP_DATALAKE", "false").lower() == "true"
+        self.commercial_mode = os.getenv("BIOMNI_COMMERCIAL_MODE", "false").lower() == "true"
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")

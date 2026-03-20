@@ -1,4 +1,4 @@
-"""SSE streaming for Biomni tasks."""
+"""SSE streaming for Biomni tasks using native go_stream()."""
 import asyncio
 import json
 import time
@@ -8,7 +8,6 @@ from uuid import uuid4
 
 import structlog
 
-from biomni_svc.agent import run_biomni_task
 from biomni_svc.clarify import evaluate_clarification
 from biomni_svc.pdf import generate_and_upload_run_pdf
 from biomni_svc.storage import upload_biomni_result_to_s3
@@ -34,9 +33,9 @@ async def stream_biomni_events(
     generate_pdf: bool = False,
 ) -> AsyncGenerator[str, None]:
     """
-    Async generator that runs Biomni in a thread and yields SSE events.
+    Async generator that runs Biomni via go_stream() and yields SSE events.
 
-    Event types: started, step, clarify, result, error, ping, done
+    Event types: started, step, image, clarify, result, error, ping, done
     """
     queue: Queue = Queue()
     run_id = str(uuid4())
@@ -52,28 +51,32 @@ async def stream_biomni_events(
 
     yield _format_sse("started", {"query": query[:200], "session_id": session_id, "run_id": run_id})
 
-    def _run() -> None:
+    def _stream_to_queue() -> None:
         try:
-            outcome = run_biomni_task(
+            from biomni_svc.agent import stream_biomni_task
+
+            for event in stream_biomni_task(
                 query=query,
                 user_id=user_id,
                 session_id=session_id,
                 max_retries=max_retries,
-            )
-            queue.put(("outcome", outcome))
+            ):
+                queue.put(event)
         except Exception as e:
-            queue.put(("error", {"error": str(e)}))
+            queue.put({"type": "error", "error": str(e)})
         finally:
-            queue.put(("done", None))
+            queue.put(None)  # sentinel
 
-    task = asyncio.to_thread(_run)
+    task = asyncio.to_thread(_stream_to_queue)
     run_task = asyncio.create_task(task)
     last_ping = 0.0
+    images_collected: List[str] = []
+    steps_collected: List[str] = []
 
     try:
         while True:
             try:
-                event_type, data = queue.get(timeout=0.5)
+                event = queue.get(timeout=0.5)
             except Empty:
                 if run_task.done():
                     break
@@ -83,49 +86,56 @@ async def stream_biomni_events(
                     yield _format_sse("ping", {"ts": now})
                 continue
 
-            if event_type == "done":
+            if event is None:
                 break
 
-            if event_type == "error":
-                yield _format_sse("error", data)
-                break
+            event_type = event.get("type", "")
 
-            if event_type == "outcome":
-                outcome: Dict[str, Any] = data
-                steps = outcome.get("steps", [])
-                for i, content in enumerate(steps):
-                    yield _format_sse("step", {"index": i, "content": content})
+            if event_type == "step":
+                steps_collected.append(event["content"])
+                yield _format_sse("step", {"index": event["index"], "content": event["content"]})
+
+            elif event_type == "image":
+                images_collected.append(event["data"])
+                yield _format_sse("image", {"data": event["data"]})
+
+            elif event_type == "result":
+                answer = event.get("answer", "")
+                success = event.get("success", False)
 
                 artifact_url: Optional[str] = None
-                if outcome.get("success") and outcome.get("result"):
+                if success and answer:
                     artifact_url = upload_biomni_result_to_s3(
-                        result=outcome["result"],
+                        result=answer,
                         session_id=session_id,
                         user_id=user_id,
                         metadata={"query": query[:500], "run_id": run_id},
                     )
 
-                pdf_url = None
-                if generate_pdf and outcome.get("success") and outcome.get("result"):
+                pdf_url: Optional[str] = None
+                if generate_pdf and success and answer:
                     pdf_url = generate_and_upload_run_pdf(
                         query=query,
-                        result=outcome["result"],
-                        steps=steps,
+                        result=answer,
+                        steps=steps_collected,
                         session_id=session_id,
                         user_id=user_id,
                         run_id=run_id,
                     )
+
                 result_payload: Dict[str, Any] = {
-                    "answer": outcome.get("result", ""),
-                    "steps": steps,
-                    "success": outcome.get("success", False),
+                    "answer": answer,
+                    "steps": steps_collected,
+                    "success": success,
+                    "images": images_collected,
                     "artifact_url": artifact_url,
                     "pdf_url": pdf_url,
                 }
-                if outcome.get("error"):
-                    result_payload["error"] = outcome["error"]
-
                 yield _format_sse("result", result_payload)
+
+            elif event_type == "error":
+                yield _format_sse("error", {"error": event.get("error", "Unknown error")})
+                break
 
         await run_task
         yield _format_sse("done", {})
